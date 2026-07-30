@@ -1,0 +1,16 @@
+# Copy to .build-config (untracked) and fill in for your machine.
+#
+# A local build must use the PRODUCTION bundle ID: a .dev id gets its own
+# preferences domain, which loses the dictionary, profiles and every setting.
+APP_NAME="Megaphone"
+BUNDLE_ID="com.kuberwastaken.megaphone"
+
+# Your signing identity. Use the SHA-1 hash, not the name — two certificates can
+# share a name, and codesign then fails with "ambiguous".
+#   security find-identity -v -p codesigning
+CODESIGN_IDENTITY=""
+
+# Optional overrides:
+# INSTALL_PATH="/Applications/Megaphone.app"
+# UPSTREAM_REMOTE="upstream"
+# UPSTREAM_BRANCH="upstream/main"
