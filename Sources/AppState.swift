@@ -236,6 +236,12 @@ final class AppState: ObservableObject, @unchecked Sendable {
     private let customSystemPromptLastModifiedStorageKey = "custom_system_prompt_last_modified"
     private let customContextPromptLastModifiedStorageKey = "custom_context_prompt_last_modified"
     private let shortcutStartDelayStorageKey = "shortcut_start_delay"
+    private let doubleTapHandsFreeEnabledStorageKey = "double_tap_hands_free_enabled"
+    private let learnFromEditsEnabledStorageKey = "learn_from_edits_enabled"
+    private let doubleTapMaxHoldStorageKey = "double_tap_max_hold"
+    private let doubleTapGapStorageKey = "double_tap_gap"
+    private static let doubleTapMaxHoldDefault: TimeInterval = 0.25
+    private static let doubleTapGapDefault: TimeInterval = 0.40
     private let preserveClipboardStorageKey = "preserve_clipboard"
     private let preserveExactWordingStorageKey = "preserve_exact_wording"
     private let keepDictationInClipboardHistoryStorageKey = "keep_dictation_in_clipboard_history"
@@ -246,6 +252,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
     private let startSoundNameStorageKey = "start_sound_name"
     private let stopSoundNameStorageKey = "stop_sound_name"
     private let errorSoundNameStorageKey = "error_sound_name"
+    private let handsFreeSoundNameStorageKey = "hands_free_sound_name"
     private let voiceMacrosStorageKey = "voice_macros"
     private let userTransformsStorageKey = "user_transforms"
     private let wakeCommandsEnabledStorageKey = "wake_commands_enabled"
@@ -482,6 +489,55 @@ final class AppState: ObservableObject, @unchecked Sendable {
         }
     }
 
+    /// Double-tap the hold key to leave the mic open (Wispr Flow's gesture).
+    /// Only defers the stop of holds too short to contain a word, so normal
+    /// push-to-talk keeps its latency.
+    @Published var doubleTapHandsFreeEnabled: Bool {
+        didSet {
+            UserDefaults.standard.set(
+                doubleTapHandsFreeEnabled,
+                forKey: doubleTapHandsFreeEnabledStorageKey
+            )
+            if !doubleTapHandsFreeEnabled {
+                deferredHoldStopTask?.cancel()
+                deferredHoldStopTask = nil
+                doubleTapCoordinator.reset()
+            }
+        }
+    }
+
+    /// Learn vocabulary from words the user fixes by hand right after a
+    /// dictation — Wispr Flow's behaviour. Gated by the Dictionary's own
+    /// automatic-learning switch as well, and every result is approval-gated.
+    @Published var learnFromEditsEnabled: Bool {
+        didSet {
+            UserDefaults.standard.set(learnFromEditsEnabled, forKey: learnFromEditsEnabledStorageKey)
+            if !learnFromEditsEnabled {
+                editHarvestTask?.cancel()
+                editHarvestTask = nil
+                pendingEditObservation = nil
+            }
+        }
+    }
+
+    /// A completed hold shorter than this counts as a tap. Bounds the worst-case
+    /// latency the gesture can add to a very short push-to-talk.
+    @Published var doubleTapMaxHold: TimeInterval {
+        didSet {
+            UserDefaults.standard.set(doubleTapMaxHold, forKey: doubleTapMaxHoldStorageKey)
+            doubleTapCoordinator.maxTapDuration = doubleTapMaxHold
+        }
+    }
+
+    /// How long after a tap's release the second tap may arrive. Human reaction
+    /// time — independent of how long the first tap was held.
+    @Published var doubleTapGap: TimeInterval {
+        didSet {
+            UserDefaults.standard.set(doubleTapGap, forKey: doubleTapGapStorageKey)
+            doubleTapCoordinator.gap = doubleTapGap
+        }
+    }
+
     @Published var dictationAudioInterruptionEnabled: Bool {
         didSet {
             UserDefaults.standard.set(
@@ -548,6 +604,15 @@ final class AppState: ObservableObject, @unchecked Sendable {
     @Published var errorSoundName: String {
         didSet {
             UserDefaults.standard.set(errorSoundName, forKey: errorSoundNameStorageKey)
+        }
+    }
+
+    /// Played on the second tap of a double tap, so latching the mic open is
+    /// audibly different from starting a normal hold. Wispr Flow calls this
+    /// "lock". An empty string means silent.
+    @Published var handsFreeSoundName: String {
+        didSet {
+            UserDefaults.standard.set(handsFreeSoundName, forKey: handsFreeSoundNameStorageKey)
         }
     }
 
@@ -652,6 +717,19 @@ final class AppState: ObservableObject, @unchecked Sendable {
     private var needsMicrophoneRefreshAfterRecording = false
     private let pipelineHistoryStore = PipelineHistoryStore()
     private let shortcutSessionController = DictationShortcutSessionController()
+    /// Double-tap-the-hold-key-to-go-hands-free. Pure state machine; see
+    /// `DoubleTapHoldCoordinator` for why normal dictation is not slowed.
+    private var doubleTapCoordinator = DoubleTapHoldCoordinator()
+    private var deferredHoldStopTask: Task<Void, Never>?
+
+    /// Seconds to wait before reading a dictation back to see what the user
+    /// changed. Long enough to finish a correction, short enough that the text
+    /// is probably still in the same field.
+    static let editHarvestDelay: TimeInterval = 25
+    private var pendingEditObservation: PendingEditObservation?
+    private var editHarvestTask: Task<Void, Never>?
+    /// Guards against a late timer harvesting a newer observation.
+    private var editObservationGeneration = 0
     private var activeRecordingTriggerMode: RecordingTriggerMode?
     private var currentSessionIntent: SessionIntent = .dictation
     private var pendingSelectionSnapshot: AppSelectionSnapshot?
@@ -724,6 +802,18 @@ final class AppState: ObservableObject, @unchecked Sendable {
         let writingFormalityByContext = UserDefaults.standard
             .dictionary(forKey: writingFormalityByContextStorageKey) as? [String: String] ?? [:]
         let shortcutStartDelay = max(0, UserDefaults.standard.double(forKey: shortcutStartDelayStorageKey))
+        let doubleTapHandsFreeEnabled = UserDefaults.standard.object(
+            forKey: doubleTapHandsFreeEnabledStorageKey
+        ) == nil ? true : UserDefaults.standard.bool(forKey: doubleTapHandsFreeEnabledStorageKey)
+        let learnFromEditsEnabled = UserDefaults.standard.object(
+            forKey: learnFromEditsEnabledStorageKey
+        ) == nil ? true : UserDefaults.standard.bool(forKey: learnFromEditsEnabledStorageKey)
+        // A zero-or-missing stored value means "never set" — fall back to the
+        // default rather than a 0s window, which would disable the gesture.
+        let storedMaxHold = UserDefaults.standard.double(forKey: doubleTapMaxHoldStorageKey)
+        let doubleTapMaxHold = storedMaxHold > 0 ? storedMaxHold : Self.doubleTapMaxHoldDefault
+        let storedGap = UserDefaults.standard.double(forKey: doubleTapGapStorageKey)
+        let doubleTapGap = storedGap > 0 ? storedGap : Self.doubleTapGapDefault
         let isCommandModeEnabled = UserDefaults.standard.object(forKey: commandModeEnabledStorageKey) == nil
             ? false
             : UserDefaults.standard.bool(forKey: commandModeEnabledStorageKey)
@@ -763,6 +853,10 @@ final class AppState: ObservableObject, @unchecked Sendable {
         let startSoundName = UserDefaults.standard.string(forKey: startSoundNameStorageKey) ?? "Tink"
         let stopSoundName = UserDefaults.standard.string(forKey: stopSoundNameStorageKey) ?? "Pop"
         let errorSoundName = UserDefaults.standard.string(forKey: errorSoundNameStorageKey) ?? "Basso"
+        // Falls back to the built-in "Bottle" so the gesture is audible on a
+        // machine without the Wispr Flow files in ~/Library/Sounds.
+        let handsFreeSoundName = UserDefaults.standard
+            .string(forKey: handsFreeSoundNameStorageKey) ?? "Bottle"
         
         let initialMacros: [VoiceMacro]
         if let data = UserDefaults.standard.data(forKey: "voice_macros"),
@@ -829,6 +923,15 @@ final class AppState: ObservableObject, @unchecked Sendable {
         self.outputLanguage = outputLanguage
         self.writingFormalityByContext = writingFormalityByContext
         self.shortcutStartDelay = shortcutStartDelay
+        self.doubleTapHandsFreeEnabled = doubleTapHandsFreeEnabled
+        self.learnFromEditsEnabled = learnFromEditsEnabled
+        self.doubleTapMaxHold = doubleTapMaxHold
+        self.doubleTapGap = doubleTapGap
+        // didSet does not fire during init, so seed the machine directly.
+        self.doubleTapCoordinator = DoubleTapHoldCoordinator(
+            maxTapDuration: doubleTapMaxHold,
+            gap: doubleTapGap
+        )
         self.preserveClipboard = preserveClipboard
         self.preserveExactWording = smartCleanupMode == .exact
         self.keepDictationInClipboardHistory = keepDictationInClipboardHistory
@@ -840,6 +943,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
         self.startSoundName = startSoundName
         self.stopSoundName = stopSoundName
         self.errorSoundName = errorSoundName
+        self.handsFreeSoundName = handsFreeSoundName
         self.voiceMacros = initialMacros
         self.userTransforms = initialUserTransforms
         self.wakeCommandsEnabled = wakeCommandsEnabled
@@ -1727,10 +1831,20 @@ final class AppState: ObservableObject, @unchecked Sendable {
             return
         }
 
+        if doubleTapHandsFreeEnabled,
+           event == .holdActivated || event == .holdDeactivated,
+           interceptForDoubleTap(event) {
+            return
+        }
+
         guard let action = shortcutSessionController.handle(event: event, isTranscribing: isTranscribing) else {
             return
         }
 
+        applyShortcutAction(action)
+    }
+
+    private func applyShortcutAction(_ action: DictationShortcutAction) {
         switch action {
         case .start(let mode):
             os_log(.info, log: recordingLog, "Shortcut start fired for mode %{public}@", mode.rawValue)
@@ -1750,6 +1864,87 @@ final class AppState: ObservableObject, @unchecked Sendable {
             } else if pendingShortcutStartMode != nil {
                 pendingShortcutStartMode = .toggle
             }
+        }
+    }
+
+    /// Returns true when the double-tap machine has fully handled the event and
+    /// the session controller must not see it.
+    private func interceptForDoubleTap(_ event: ShortcutEvent) -> Bool {
+        let now = CFAbsoluteTimeGetCurrent()
+        let decision = event == .holdActivated
+            ? doubleTapCoordinator.holdActivated(now: now)
+            : doubleTapCoordinator.holdDeactivated(now: now)
+
+        // Cheap (fires only on hold key edges) and the only way to tell a
+        // mis-timed gesture from a broken one without a rebuild.
+        os_log(
+            .debug,
+            log: recordingLog,
+            "double tap: %{public}@ -> %{public}@",
+            String(describing: event),
+            String(describing: decision)
+        )
+
+        switch decision {
+        case .passThrough:
+            return false
+
+        case .swallow:
+            return true
+
+        case .deferStop(let after):
+            // The hold was too short to contain speech. Hold its stop back just
+            // long enough for a possible second tap; a real dictation never
+            // reaches this branch, so push-to-talk latency is untouched.
+            deferredHoldStopTask?.cancel()
+            deferredHoldStopTask = Task { [weak self] in
+                try? await Task.sleep(nanoseconds: UInt64(after * 1_000_000_000))
+                if Task.isCancelled { return }
+                await MainActor.run { [weak self] in
+                    guard let self else { return }
+                    self.deferredHoldStopTask = nil
+                    guard self.doubleTapCoordinator.deferredStopShouldProceed(
+                        now: CFAbsoluteTimeGetCurrent()
+                    ) else { return }
+                    guard let action = self.shortcutSessionController.handle(
+                        event: .holdDeactivated,
+                        isTranscribing: self.isTranscribing
+                    ) else { return }
+                    self.applyShortcutAction(action)
+                }
+            }
+            return true
+
+        case .latchToHandsFree:
+            // Keep the audio that is already being captured and only change
+            // mode, so the two taps never interrupt the recording.
+            deferredHoldStopTask?.cancel()
+            deferredHoldStopTask = nil
+            os_log(.info, log: recordingLog, "Double tap: latching to hands-free")
+            // Distinct from the start sound: the tap that locks the mic open
+            // should not sound like the tap that began the hold.
+            playHandsFreeSound()
+            shortcutSessionController.forceToggleMode()
+            if isRecording {
+                activeRecordingTriggerMode = .toggle
+                overlayManager.setRecordingTriggerMode(.toggle, animated: true)
+            } else if pendingShortcutStartMode != nil {
+                pendingShortcutStartMode = .toggle
+            }
+            return true
+
+        case .stopHandsFree:
+            os_log(.info, log: recordingLog, "Double tap: ending hands-free session")
+            deferredHoldStopTask?.cancel()
+            deferredHoldStopTask = nil
+            cancelPendingShortcutStart()
+            shortcutSessionController.reset()
+            guard isRecording else {
+                activeRecordingTriggerMode = nil
+                return true
+            }
+            stopAndTranscribe()
+            return true
         }
     }
 
@@ -2564,17 +2759,115 @@ final class AppState: ObservableObject, @unchecked Sendable {
         return "\(status); detected press enter command"
     }
 
+    // MARK: - Learning from post-dictation edits
+
+    /// A dictation that has landed in some app and might still be edited.
+    private struct PendingEditObservation {
+        let inserted: String
+        let processIdentifier: pid_t
+        let bundleIdentifier: String?
+    }
+
+    /// Remembers what was just inserted so a later read-back can see what the
+    /// user changed. Only one is tracked: if another dictation happens first,
+    /// the previous one is checked immediately and replaced.
+    @MainActor
+    private func armEditObservation(for inserted: String) {
+        guard DictionaryStore.shared.automaticLearningEnabled,
+              learnFromEditsEnabled,
+              // Very short dictations produce noisy alignments and very long
+              // ones are usually prose the user reworks for meaning.
+              (3...120).contains(DictationEditLearner.words(in: inserted).count),
+              let app = NSWorkspace.shared.frontmostApplication else {
+            pendingEditObservation = nil
+            return
+        }
+
+        // Any earlier dictation has had all the editing time it is going to get.
+        harvestPendingEditObservation()
+
+        pendingEditObservation = PendingEditObservation(
+            inserted: inserted,
+            processIdentifier: app.processIdentifier,
+            bundleIdentifier: app.bundleIdentifier
+        )
+
+        let generation = editObservationGeneration &+ 1
+        editObservationGeneration = generation
+        editHarvestTask?.cancel()
+        editHarvestTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(Self.editHarvestDelay * 1_000_000_000))
+            if Task.isCancelled { return }
+            await MainActor.run { [weak self] in
+                guard let self, self.editObservationGeneration == generation else { return }
+                self.harvestPendingEditObservation()
+            }
+        }
+    }
+
+    /// Reads the field back, diffs it against what was inserted, and records any
+    /// word the user corrected. Silent by design: no focused text element, a
+    /// different app in front, or an ambiguous diff all mean "learn nothing".
+    @MainActor
+    private func harvestPendingEditObservation() {
+        guard let pending = pendingEditObservation else { return }
+        pendingEditObservation = nil
+        editHarvestTask?.cancel()
+        editHarvestTask = nil
+
+        // Only read the app the text went into, and only while it is still
+        // frontmost — reading a background app's focused element is unreliable.
+        guard let app = NSWorkspace.shared.frontmostApplication,
+              app.processIdentifier == pending.processIdentifier,
+              let current = contextService.focusedElementText(
+                processIdentifier: pending.processIdentifier
+              ),
+              current != pending.inserted else { return }
+
+        let corrections = DictationEditLearner.corrections(
+            inserted: pending.inserted,
+            edited: current
+        )
+        guard !corrections.isEmpty else { return }
+
+        for correction in corrections {
+            let status = DictionaryStore.shared.observeEditCorrection(correction)
+            os_log(
+                .info,
+                log: recordingLog,
+                "learned from edit: %{public}@ -> %{public}@ (%{public}@) status=%{public}@",
+                correction.heard,
+                correction.written,
+                correction.isCaseOnly ? "case" : "respelling",
+                status.map(\.rawValue) ?? "no change"
+            )
+        }
+        if corrections.contains(where: { !$0.isCaseOnly }) {
+            VocabularyNotificationManager.shared.flashCheckmark()
+        }
+    }
+
     func playAlertSound(named name: String) {
         guard alertSoundsEnabled else { return }
 
-        let sound = NSSound(named: name)
-        sound?.volume = soundVolume
-        sound?.play()
+        guard let sound = NSSound(named: name) else {
+            // A name set via `defaults write` (or a file removed from
+            // ~/Library/Sounds) resolves to nil and would otherwise be silent
+            // with no way to tell that from a volume problem.
+            os_log(.error, log: recordingLog, "alert sound %{public}@ did not resolve", name)
+            return
+        }
+        sound.volume = soundVolume
+        sound.play()
     }
 
     func playStartSound() { playAlertSound(named: startSoundName) }
     func playStopSound() { playAlertSound(named: stopSoundName) }
     func playErrorSound() { playAlertSound(named: errorSoundName) }
+    func playHandsFreeSound() {
+        guard !handsFreeSoundName.isEmpty else { return }
+        playAlertSound(named: handsFreeSoundName)
+    }
 
     private func findMatchingMacro(for transcript: String) -> VoiceMacro? {
         let normalizedTranscript = normalize(transcript)
@@ -2849,7 +3142,13 @@ final class AppState: ObservableObject, @unchecked Sendable {
                 sessionID: smartSessionID,
                 timeout: trimmedRawTranscript.count > 500 ? 4 : 2.5
             )
-            return (result.text, .smartCleanupSucceeded(elapsed: result.elapsed), result.prompt, nil)
+            // The model is only *told* about the corrections, so it applies them
+            // inconsistently. Re-apply them to its output so a correction is a
+            // guarantee in Smart mode too, not a suggestion. Idempotent: where
+            // the model already substituted, the spoken form is gone and this
+            // matches nothing.
+            let corrected = TranscriptTidier.apply(corrections: corrections, to: result.text)
+            return (corrected, .smartCleanupSucceeded(elapsed: result.elapsed), result.prompt, nil)
         } catch {
             os_log(.error, log: recordingLog, "On-device smart cleanup failed: %{public}@", error.localizedDescription)
             return (safeFallback, .smartCleanupFallback(reason: error.localizedDescription), "", nil)
@@ -3073,6 +3372,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
                             }
                             if !trimmedFinalTranscript.isEmpty {
                                 DictionaryStore.shared.recordUsage(in: trimmedFinalTranscript)
+                                self.armEditObservation(for: trimmedFinalTranscript)
                             }
                         }
                         self.recordPipelineHistoryEntry(
