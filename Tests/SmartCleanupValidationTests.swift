@@ -6,6 +6,7 @@ enum SmartCleanupValidationTests {
         testTruncatedTranscriptIsRejected()
         testOrdinaryCleanupIsAccepted()
         testListFormattingIsAllowed()
+        testRepeatedLineIsRejected()
         testBlockMarkdownIsRejected()
         testSelectionTransformsAreUnaffected()
     }
@@ -42,6 +43,22 @@ enum SmartCleanupValidationTests {
     private static func testListFormattingIsAllowed() {
         expectAccepted("- option one\n- option two", source: "Give me the two options.")
         expectAccepted("1. First\n2. Second", source: "What are the steps?")
+    }
+
+    /// A short line answered with a restatement of itself. Measured on "deploy is
+    /// green ✅", which came back as the sentence plus a bullet repeating it — too
+    /// small an expansion for the length ceiling to catch.
+    private static func testRepeatedLineIsRejected() {
+        expectRejected("Deploy is green ✅\n\n- Deploy is green ✅", source: "deploy is green ✅")
+        expectRejected("Ship the build.\nShip the build.", source: "ship the build")
+        // The marker and the trailing full stop are not what makes it different.
+        expectRejected("Wash the dishes\n- Wash the dishes.", source: "wash the dishes")
+
+        // Genuinely different lines still pass, including a list whose items merely
+        // start alike.
+        expectAccepted("- Buy coffee\n- Buy tea", source: "buy coffee, buy tea")
+        expectAccepted("Deploy is green ✅", source: "deploy is green ✅")
+        expectAccepted("I want three things:\n- one\n- two", source: "I want three things, one, two")
     }
 
     /// Bullets are fine, but fencing or heading plain dictated prose never is.

@@ -1015,6 +1015,22 @@ actor AppleFoundationModelsPostProcessor {
                 throw SmartCleanupError.invalidOutput("dropped the spoken word \"\(word)\"")
             }
         }
+        // A short line sometimes comes back restated as its own list: "deploy is green ✅"
+        // returned as itself plus "- Deploy is green ✅". Nothing was dropped and the
+        // expansion is far under the length ceiling, so neither guard above notices — but
+        // pasting the same sentence twice is never the intent. Falling back to the
+        // deterministic cleanup keeps the one line the speaker actually said.
+        if !allowsExpansion {
+            // Only lines carrying actual words compare. A code fence opens and
+            // closes with the same "```", which is a repeated line and not a
+            // repeated sentence.
+            let lines = output.split(whereSeparator: \.isNewline)
+                .map(Self.listItemBody)
+                .filter { $0.contains(where: { $0.isLetter || $0.isNumber }) }
+            if lines.count > 1, Set(lines).count < lines.count {
+                throw SmartCleanupError.invalidOutput("repeated a line")
+            }
+        }
         // Bullets and numbered lists are welcome, but the model also wraps plain prose in
         // code fences, headings, or blockquotes, which is never what was dictated.
         if !allowsExpansion {
@@ -1043,6 +1059,18 @@ actor AppleFoundationModelsPostProcessor {
         "dick", "cock", "cunt", "prick", "twat", "wanker", "bollocks", "bugger",
         "slut", "whore", "douche", "jackass", "dumbass", "motherfucker"
     ]
+
+    /// A line stripped of what makes it a list item, so "Deploy is green." and
+    /// "- Deploy is green" compare as the same sentence.
+    private static func listItemBody(_ line: some StringProtocol) -> String {
+        var body = line.trimmingCharacters(in: .whitespaces)
+        body = body.replacingOccurrences(
+            of: #"^(?:[-*•–—]|\d+[.)])\s+"#, with: "", options: .regularExpression
+        )
+        return body
+            .trimmingCharacters(in: CharacterSet(charactersIn: " .!?,;:"))
+            .lowercased()
+    }
 
     private static func words(_ text: String) -> Set<String> {
         Set(text.lowercased().split(whereSeparator: { !$0.isLetter }).map(String.init))
