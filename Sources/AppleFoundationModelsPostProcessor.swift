@@ -45,6 +45,10 @@ struct SmartCleanupRequest: Sendable {
     /// multi-line paste into a shell without bracketed paste executes each line;
     /// on when the user has opted in.
     var allowStructureInCode: Bool = false
+    /// Permit list structure in casual chat. Off by default because the
+    /// casual-chat guidance otherwise forbids bullets outright, and the two
+    /// instructions must not contradict each other.
+    var allowStructureInCasualChat: Bool = false
 
     init(
         transcript: String,
@@ -59,7 +63,8 @@ struct SmartCleanupRequest: Sendable {
         outputLanguage: String,
         customInstructions: String,
         formality: WritingFormality = .balanced,
-        allowStructureInCode: Bool = false
+        allowStructureInCode: Bool = false,
+        allowStructureInCasualChat: Bool = false
     ) {
         self.transcript = transcript
         self.appName = appName
@@ -74,6 +79,7 @@ struct SmartCleanupRequest: Sendable {
         self.customInstructions = customInstructions
         self.formality = formality
         self.allowStructureInCode = allowStructureInCode
+        self.allowStructureInCasualChat = allowStructureInCasualChat
     }
 }
 
@@ -187,7 +193,11 @@ enum AppWritingContext: String, Equatable, Sendable {
         }
     }
 
-    func cleanupGuidance(markdown: Bool, formality: WritingFormality = .balanced) -> String {
+    func cleanupGuidance(
+        markdown: Bool,
+        formality: WritingFormality = .balanced,
+        allowStructureInCasualChat: Bool = false
+    ) -> String {
         let base: String
         switch self {
         case .email:
@@ -195,7 +205,20 @@ enum AppWritingContext: String, Equatable, Sendable {
         case .workChat:
             base = "Use concise, professional chat formatting. Preserve the speaker's tone and do not make the message more formal unless asked. Keep prose as prose; a list only when explicitly requested."
         case .casualChat:
-            base = "Use natural conversational punctuation and preserve the speaker's casual tone. Plain text only: never markdown syntax, bullets, or headers."
+            // Opting in swaps the blanket bullet ban for a narrow permission.
+            // The ban has to go, not just be supplemented: leaving "never
+            // bullets" in place alongside the ordinal hint gives the model two
+            // contradictory instructions.
+            // The permitted wording is lifted verbatim from `.document`, which is
+            // measured good, rather than newly invented. A hand-written variant
+            // ("write them one per line with a leading \"- \"") made the model
+            // drop the introductory clause, so "grocery list bullet point milk…"
+            // came back as bullets only and tripped the transcript-drop guard —
+            // marker lists went 3/3 to 0/3 while ordinal lists went 0/3 to 3/3.
+            base = allowStructureInCasualChat
+                ? "Use natural conversational punctuation and preserve the speaker's casual tone. Never markdown syntax or headers. Structure is welcome here: when the speaker clearly itemizes steps or tasks, format them as a list with one item per line."
+                : "Use natural conversational punctuation and preserve the speaker's casual tone. Plain text only: never markdown syntax, bullets, or headers."
+
         case .document:
             base = "Use polished prose punctuation and paragraph breaks while preserving every idea and the speaker's tone. Structure is welcome here: when the speaker clearly itemizes steps or tasks, format them as a list with one item per line."
         case .codeOrTerminal:
@@ -778,7 +801,14 @@ actor AppleFoundationModelsPostProcessor {
             windowTitle: request.windowTitle
         )
         hints.append("Writing context: \(writingContext.label)")
-        hints.append("App-aware cleanup: \(writingContext.cleanupGuidance(markdown: markdown, formality: request.formality))")
+        hints.append(
+            "App-aware cleanup: "
+            + writingContext.cleanupGuidance(
+                markdown: markdown,
+                formality: request.formality,
+                allowStructureInCasualChat: request.allowStructureInCasualChat
+            )
+        )
         if let selected = request.selectedText?.trimmingCharacters(in: .whitespacesAndNewlines), !selected.isEmpty {
             hints.append("Nearby selected text (spelling/tone hint only): \(selected.prefix(300))")
         }

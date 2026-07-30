@@ -63,11 +63,32 @@ enum QuestionMark {
         return prefix + sentence + "?"
     }
 
+    /// Interjections and discourse openers that sit in front of a question
+    /// without changing it: "hey can you cover for me" is still a question.
+    /// Measured: without this, the model's own "?" was the only thing catching
+    /// these, and it dropped them 3/3 in casual chat.
+    private static let leadingInterjections: Set<String> = [
+        "hey", "yo", "hi", "hello", "okay", "ok", "so", "well", "oh", "ah",
+        "um", "uh", "hmm", "alright", "aight", "man", "bro", "dude", "bruh",
+        "and", "but", "also", "actually", "honestly", "wait", "yeah", "yo",
+        "please", "quick", "real"
+    ]
+
     static func looksLikeQuestion(_ sentence: String) -> Bool {
         let stripped = sentence.trimmingCharacters(
             in: CharacterSet(charactersIn: "\"'“”‘’([{ \t")
         )
-        let words = stripped.split { $0 == " " || $0.isNewline }.map(String.init)
+        var words = stripped.split { $0 == " " || $0.isNewline }.map(String.init)
+        // Drop at most two leading interjections, never the whole sentence, so
+        // "okay so can you send it" is tested as "can you send it".
+        var dropped = 0
+        while dropped < 2, words.count > 1 {
+            let head = words[0].lowercased()
+                .trimmingCharacters(in: CharacterSet(charactersIn: ".,!?;:'"))
+            guard leadingInterjections.contains(head) else { break }
+            words.removeFirst()
+            dropped += 1
+        }
         guard let rawFirst = words.first else { return false }
         let w0 = rawFirst.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: ".,!?;:'"))
         let w1 = words.count > 1

@@ -243,6 +243,8 @@ final class AppState: ObservableObject, @unchecked Sendable {
     private let addQuestionMarksStorageKey = "add_question_marks"
     private let questionMarksInCodeStorageKey = "question_marks_in_code"
     private let listsInCodeStorageKey = "lists_in_code"
+    private let listsInCasualChatStorageKey = "lists_in_casual_chat"
+    private let lowercaseSentenceContinuationsStorageKey = "lowercase_sentence_continuations"
     private let doubleTapMaxHoldStorageKey = "double_tap_max_hold"
     private let doubleTapGapStorageKey = "double_tap_gap"
     private static let doubleTapMaxHoldDefault: TimeInterval = 0.25
@@ -560,6 +562,27 @@ final class AppState: ObservableObject, @unchecked Sendable {
         }
     }
 
+    /// Lowercase the first letter of a dictation that continues a sentence
+    /// already underway in the field, so continuing "I was thinking we could"
+    /// inserts "meet at the office", not "Meet at the office". Skips names,
+    /// acronyms, "I", days and months. See SentenceContinuation.
+    @Published var lowercaseSentenceContinuations: Bool {
+        didSet {
+            UserDefaults.standard.set(
+                lowercaseSentenceContinuations,
+                forKey: lowercaseSentenceContinuationsStorageKey
+            )
+        }
+    }
+
+    /// Allow dictated lists to become real lines in casual chat too. Off in
+    /// stock Megaphone, whose casual-chat guidance forbids bullets outright.
+    @Published var listsInCasualChat: Bool {
+        didSet {
+            UserDefaults.standard.set(listsInCasualChat, forKey: listsInCasualChatStorageKey)
+        }
+    }
+
     /// Allow dictated lists to become real lines in terminals and editors. Safe
     /// with bracketed paste (modern zsh/bash hold a multi-line paste instead of
     /// running each line); turn off if pasting into a shell that lacks it.
@@ -872,6 +895,12 @@ final class AppState: ObservableObject, @unchecked Sendable {
         let listsInCode = UserDefaults.standard.object(
             forKey: listsInCodeStorageKey
         ) == nil ? true : UserDefaults.standard.bool(forKey: listsInCodeStorageKey)
+        let listsInCasualChat = UserDefaults.standard.object(
+            forKey: listsInCasualChatStorageKey
+        ) == nil ? true : UserDefaults.standard.bool(forKey: listsInCasualChatStorageKey)
+        let lowercaseSentenceContinuations = UserDefaults.standard.object(
+            forKey: lowercaseSentenceContinuationsStorageKey
+        ) == nil ? true : UserDefaults.standard.bool(forKey: lowercaseSentenceContinuationsStorageKey)
         // A zero-or-missing stored value means "never set" — fall back to the
         // default rather than a 0s window, which would disable the gesture.
         let storedMaxHold = UserDefaults.standard.double(forKey: doubleTapMaxHoldStorageKey)
@@ -994,6 +1023,8 @@ final class AppState: ObservableObject, @unchecked Sendable {
         self.addQuestionMarks = addQuestionMarks
         self.questionMarksInCode = questionMarksInCode
         self.listsInCode = listsInCode
+        self.listsInCasualChat = listsInCasualChat
+        self.lowercaseSentenceContinuations = lowercaseSentenceContinuations
         self.doubleTapMaxHold = doubleTapMaxHold
         self.doubleTapGap = doubleTapGap
         // didSet does not fire during init, so seed the machine directly.
@@ -1375,7 +1406,9 @@ final class AppState: ObservableObject, @unchecked Sendable {
                     resolveSelfCorrections: self.resolveSelfCorrections,
                     addQuestionMarks: self.addQuestionMarks,
                     questionMarksInCode: self.questionMarksInCode,
-                    listsInCode: self.listsInCode
+                    listsInCode: self.listsInCode,
+                    listsInCasualChat: self.listsInCasualChat,
+                    lowercaseSentenceContinuations: self.lowercaseSentenceContinuations
                 )
                 finalTranscript = result.finalTranscript
                 processingStatus = Self.statusMessage(
@@ -3052,6 +3085,8 @@ final class AppState: ObservableObject, @unchecked Sendable {
         addQuestionMarks: Bool = true,
         questionMarksInCode: Bool = true,
         listsInCode: Bool = true,
+        listsInCasualChat: Bool = true,
+        lowercaseSentenceContinuations: Bool = true,
         previousText: String? = nil,
         smartSessionID: UUID? = nil
     ) async -> (
@@ -3098,6 +3133,16 @@ final class AppState: ObservableObject, @unchecked Sendable {
             // shell command. Adding "?" is additive and cannot corrupt a command.
             if addQuestionMarks, writingContext != .codeOrTerminal || questionMarksInCode {
                 t = QuestionMark.punctuate(t)
+            }
+            // Last, so it wins over anything above that capitalizes a first
+            // letter: the caret decides whether this text starts a sentence at
+            // all. Vocabulary is passed so a name keeps its capital.
+            if lowercaseSentenceContinuations {
+                t = SentenceContinuation.adjust(
+                    t,
+                    textBeforeCaret: context.textBeforeCaret,
+                    protectedTerms: vocabulary
+                )
             }
             return t
         }
@@ -3247,7 +3292,8 @@ final class AppState: ObservableObject, @unchecked Sendable {
                     .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
                     .joined(separator: "\n"),
                 formality: formality,
-                allowStructureInCode: listsInCode
+                allowStructureInCode: listsInCode,
+                allowStructureInCasualChat: listsInCasualChat
             )
             let result = try await AppleFoundationModelsPostProcessor.shared.cleanup(
                 request,
@@ -3453,6 +3499,8 @@ final class AppState: ObservableObject, @unchecked Sendable {
                         addQuestionMarks: self.addQuestionMarks,
                         questionMarksInCode: self.questionMarksInCode,
                         listsInCode: self.listsInCode,
+                        listsInCasualChat: self.listsInCasualChat,
+                        lowercaseSentenceContinuations: self.lowercaseSentenceContinuations,
                         previousText: previousText,
                         smartSessionID: cleanupSessionID
                     )

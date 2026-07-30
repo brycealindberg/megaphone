@@ -12,6 +12,7 @@ enum QuestionMarkTests {
         testStatementsUntouched()
         testImperativesUntouched()
         testNameCollisionUntouched()
+        testLeadingInterjectionsSkipped()
         testHowToInfinitiveUntouched()
         testEmptyAndNoQuestion()
     }
@@ -70,6 +71,22 @@ enum QuestionMarkTests {
     private static func testNameCollisionUntouched() {
         expect("Will is here now", "Will is here now")
         expect("May is out today", "May is out today")
+    }
+
+    private static func testLeadingInterjectionsSkipped() {
+        expect("hey can you cover for me tomorrow", "hey can you cover for me tomorrow?")
+        expect("okay so can you send it", "okay so can you send it?")
+        expect("yo you free later", "yo you free later?")
+        expect("and what did he say", "and what did he say?")
+        // Two is the limit; a third leaves the sentence untested.
+        expect("hey okay well can you send it", "hey okay well can you send it")
+        // Must not manufacture a question out of a statement.
+        expect("hey I need help with this", "hey I need help with this")
+        expect("okay you go first", "okay you go first")
+        expect("well that explains it", "well that explains it")
+        // A bare interjection is never consumed down to nothing.
+        expect("hey", "hey")
+        expect("okay", "okay")
     }
 
     private static func testHowToInfinitiveUntouched() {
