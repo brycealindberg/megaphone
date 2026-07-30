@@ -238,6 +238,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
     private let shortcutStartDelayStorageKey = "shortcut_start_delay"
     private let doubleTapHandsFreeEnabledStorageKey = "double_tap_hands_free_enabled"
     private let learnFromEditsEnabledStorageKey = "learn_from_edits_enabled"
+    private let casualChatLightPunctuationStorageKey = "casual_chat_light_punctuation"
     private let doubleTapMaxHoldStorageKey = "double_tap_max_hold"
     private let doubleTapGapStorageKey = "double_tap_gap"
     private static let doubleTapMaxHoldDefault: TimeInterval = 0.25
@@ -517,6 +518,17 @@ final class AppState: ObservableObject, @unchecked Sendable {
                 editHarvestTask = nil
                 pendingEditObservation = nil
             }
+        }
+    }
+
+    /// Trim the commas the cleanup model adds in casual chat (WhatsApp, iMessage,
+    /// Discord). Deterministic and comma-only. See CasualPunctuation.
+    @Published var casualChatLightPunctuation: Bool {
+        didSet {
+            UserDefaults.standard.set(
+                casualChatLightPunctuation,
+                forKey: casualChatLightPunctuationStorageKey
+            )
         }
     }
 
@@ -808,6 +820,9 @@ final class AppState: ObservableObject, @unchecked Sendable {
         let learnFromEditsEnabled = UserDefaults.standard.object(
             forKey: learnFromEditsEnabledStorageKey
         ) == nil ? true : UserDefaults.standard.bool(forKey: learnFromEditsEnabledStorageKey)
+        let casualChatLightPunctuation = UserDefaults.standard.object(
+            forKey: casualChatLightPunctuationStorageKey
+        ) == nil ? true : UserDefaults.standard.bool(forKey: casualChatLightPunctuationStorageKey)
         // A zero-or-missing stored value means "never set" — fall back to the
         // default rather than a 0s window, which would disable the gesture.
         let storedMaxHold = UserDefaults.standard.double(forKey: doubleTapMaxHoldStorageKey)
@@ -925,6 +940,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
         self.shortcutStartDelay = shortcutStartDelay
         self.doubleTapHandsFreeEnabled = doubleTapHandsFreeEnabled
         self.learnFromEditsEnabled = learnFromEditsEnabled
+        self.casualChatLightPunctuation = casualChatLightPunctuation
         self.doubleTapMaxHold = doubleTapMaxHold
         self.doubleTapGap = doubleTapGap
         // didSet does not fire during init, so seed the machine directly.
@@ -1301,7 +1317,8 @@ final class AppState: ObservableObject, @unchecked Sendable {
                     outputLanguage: self.outputLanguage,
                     cleanupMode: self.smartCleanupMode,
                     wakeCommandsEnabled: self.wakeCommandsEnabled,
-                    plainMegaphoneWakeWordEnabled: self.plainMegaphoneWakeWordEnabled
+                    plainMegaphoneWakeWordEnabled: self.plainMegaphoneWakeWordEnabled,
+                    casualChatLightPunctuation: self.casualChatLightPunctuation
                 )
                 finalTranscript = result.finalTranscript
                 processingStatus = Self.statusMessage(
@@ -2973,6 +2990,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
         cleanupMode: SmartCleanupMode,
         wakeCommandsEnabled: Bool,
         plainMegaphoneWakeWordEnabled: Bool,
+        casualChatLightPunctuation: Bool = true,
         previousText: String? = nil,
         smartSessionID: UUID? = nil
     ) async -> (
@@ -2992,13 +3010,23 @@ final class AppState: ObservableObject, @unchecked Sendable {
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
         let corrections = TranscriptTidier.CorrectionMapping.parse(wordCorrections)
-        // The user's standing writing-style dial for wherever this dictation
-        // lands, resolved from the context captured at recording time.
-        let formality = writingFormality(for: AppWritingContext.classify(
+        // The writing context for wherever this dictation lands, resolved from
+        // the context captured at recording time. Drives both the formality
+        // dial and casual-chat punctuation lightening.
+        let writingContext = AppWritingContext.classify(
             appName: context.appName,
             bundleIdentifier: context.bundleIdentifier,
             windowTitle: context.windowTitle
-        ))
+        )
+        let formality = writingFormality(for: writingContext)
+        // Casual chat gets fewer commas: "Okay, bet I will" -> "Okay bet I
+        // will". Deterministic and comma-only, so it can never drop a question
+        // mark or a capital the way every cleanup-prompt wording did. Never
+        // applied to Exact mode, which is verbatim by definition.
+        func lightenIfCasualChat(_ text: String) -> String {
+            guard casualChatLightPunctuation, writingContext == .casualChat else { return text }
+            return CasualPunctuation.lighten(text)
+        }
 
         if wakeCommandsEnabled, case .dictation = intent, let wake = WakePhraseMatcher.detect(
             in: trimmedRawTranscript,
@@ -3115,7 +3143,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
         let deterministic = TranscriptTidier.tidy(trimmedRawTranscript, corrections: corrections)
         let safeFallback = deterministic.isEmpty ? trimmedRawTranscript : deterministic
         if cleanupMode == .basic {
-            return (safeFallback, .deterministicCleanup, "", nil)
+            return (lightenIfCasualChat(safeFallback), .deterministicCleanup, "", nil)
         }
 
         do {
@@ -3148,10 +3176,10 @@ final class AppState: ObservableObject, @unchecked Sendable {
             // the model already substituted, the spoken form is gone and this
             // matches nothing.
             let corrected = TranscriptTidier.apply(corrections: corrections, to: result.text)
-            return (corrected, .smartCleanupSucceeded(elapsed: result.elapsed), result.prompt, nil)
+            return (lightenIfCasualChat(corrected), .smartCleanupSucceeded(elapsed: result.elapsed), result.prompt, nil)
         } catch {
             os_log(.error, log: recordingLog, "On-device smart cleanup failed: %{public}@", error.localizedDescription)
-            return (safeFallback, .smartCleanupFallback(reason: error.localizedDescription), "", nil)
+            return (lightenIfCasualChat(safeFallback), .smartCleanupFallback(reason: error.localizedDescription), "", nil)
         }
     }
 
@@ -3336,6 +3364,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
                         cleanupMode: self.smartCleanupMode,
                         wakeCommandsEnabled: self.wakeCommandsEnabled,
                         plainMegaphoneWakeWordEnabled: self.plainMegaphoneWakeWordEnabled,
+                        casualChatLightPunctuation: self.casualChatLightPunctuation,
                         previousText: previousText,
                         smartSessionID: cleanupSessionID
                     )

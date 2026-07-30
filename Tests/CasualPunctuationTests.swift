@@ -1,0 +1,109 @@
+import Foundation
+
+enum CasualPunctuationTests {
+    static func run() {
+        testHisExample()
+        testLeadingOpenerVariants()
+        testMultiWordOpener()
+        testLoneClauseComma()
+        testTwoCommasFromOpenerPlusClause()
+        testNeverTouchesQuestionMark()
+        testNeverTouchesCapitalization()
+        testKeepsNumberCommas()
+        testKeepsListCommas()
+        testLeavesLongSentenceCommaAlone()
+        testDoesNotMatchOpenerAsPrefixOfAnotherWord()
+        testEmptyAndNoComma()
+    }
+
+    /// The reported case: "OK, bet I will" should read "OK bet I will".
+    private static func testHisExample() {
+        expect(CasualPunctuation.lighten("OK, bet I will"), "OK bet I will")
+        expect(CasualPunctuation.lighten("Okay, bet I will"), "Okay bet I will")
+    }
+
+    private static func testLeadingOpenerVariants() {
+        expect(CasualPunctuation.lighten("Yeah, sounds good"), "Yeah sounds good")
+        expect(CasualPunctuation.lighten("Haha, that's wild"), "Haha that's wild")
+        expect(CasualPunctuation.lighten("No, I can't make it"), "No I can't make it")
+        expect(CasualPunctuation.lighten("So, what's the plan"), "So what's the plan")
+    }
+
+    private static func testMultiWordOpener() {
+        expect(CasualPunctuation.lighten("No worries, all good"), "No worries all good")
+        expect(CasualPunctuation.lighten("For sure, I'll be there"), "For sure I'll be there")
+    }
+
+    /// The comma is not after the opener but between two short clauses.
+    private static func testLoneClauseComma() {
+        expect(CasualPunctuation.lighten("No worries man, all good"), "No worries man all good")
+        expect(CasualPunctuation.lighten("I'm down, let's do it"), "I'm down let's do it")
+    }
+
+    /// Opener comma AND a clause comma: the opener strip runs first, leaving a
+    /// single comma for the short-clause strip.
+    private static func testTwoCommasFromOpenerPlusClause() {
+        expect(
+            CasualPunctuation.lighten("Yeah for sure, I'll send it tonight"),
+            "Yeah for sure I'll send it tonight"
+        )
+        expect(
+            CasualPunctuation.lighten("Yeah, for sure, I'll send it tonight"),
+            "Yeah for sure I'll send it tonight"
+        )
+    }
+
+    /// The regression every prompt wording caused, made impossible by construction.
+    private static func testNeverTouchesQuestionMark() {
+        expect(CasualPunctuation.lighten("Are you coming tonight?"), "Are you coming tonight?")
+        expect(CasualPunctuation.lighten("Wait, are you coming?"), "Wait are you coming?")
+    }
+
+    private static func testNeverTouchesCapitalization() {
+        // Whatever case the cleanup produced is preserved exactly.
+        expect(CasualPunctuation.lighten("ok, bet"), "ok bet")
+        expect(CasualPunctuation.lighten("OK, BET"), "OK BET")
+    }
+
+    private static func testKeepsNumberCommas() {
+        // A number comma is the only comma, but it is between digits, so the
+        // short-clause rule must not remove it.
+        expect(CasualPunctuation.lighten("send me 1,000"), "send me 1,000")
+        expect(CasualPunctuation.lighten("Bet, it's 2,500 total"), "Bet it's 2,500 total")
+    }
+
+    private static func testKeepsListCommas() {
+        // Two clause commas -> a list -> left alone by the lone-comma rule.
+        expect(CasualPunctuation.lighten("grab eggs, milk, and bread"), "grab eggs, milk, and bread")
+    }
+
+    private static func testLeavesLongSentenceCommaAlone() {
+        let long = "After the meeting ends around three, I'll head over to grab some lunch"
+        expect(CasualPunctuation.lighten(long), long)
+    }
+
+    /// "sorry" must not be read as the opener "so", and "note" must not be "no".
+    private static func testDoesNotMatchOpenerAsPrefixOfAnotherWord() {
+        expect(CasualPunctuation.lighten("Sorry, I missed that"), "Sorry I missed that")   // one clause comma, short -> stripped anyway, but NOT via the opener path
+        expect(CasualPunctuation.lighten("Noted, will do"), "Noted will do")
+        // The distinction matters when a second comma is present: opener path
+        // must not fire on "sorry", leaving 2 commas -> list rule leaves both.
+        expect(
+            CasualPunctuation.lighten("Sorry, I grabbed eggs, milk and bread"),
+            "Sorry, I grabbed eggs, milk and bread"
+        )
+    }
+
+    private static func testEmptyAndNoComma() {
+        expect(CasualPunctuation.lighten(""), "")
+        expect(CasualPunctuation.lighten("all good no changes"), "all good no changes")
+    }
+
+    // MARK: helpers
+
+    private static func expect(_ got: String, _ want: String) {
+        guard got == want else {
+            fatalError("CasualPunctuation: wanted \"\(want)\", got \"\(got)\"")
+        }
+    }
+}
