@@ -138,6 +138,11 @@ struct DictionaryImportResult: Equatable {
 /// Learned entries remain suggestions until independently observed several times.
 final class DictionaryStore: ObservableObject {
     static let learningThreshold = 3
+    /// Sightings needed when the evidence is the user *correcting* a word by
+    /// hand, rather than merely saying it. Lower than `learningThreshold`
+    /// because an edit is deliberate, but above 1 so a single misread edit
+    /// cannot start biasing recognition on its own.
+    static let editLearningThreshold = 2
     static let learnedEntryLimit = 300
     static let suggestionLimit = 100
     static let shared = DictionaryStore()
@@ -334,6 +339,63 @@ final class DictionaryStore: ObservableObject {
             }
         }
         persist()
+    }
+
+    /// Records a word the user fixed by hand right after a dictation.
+    ///
+    /// An explicit edit is much stronger evidence than a term merely appearing
+    /// in a transcript, so this needs two sightings rather than
+    /// `learningThreshold` — but never fewer, because `DictationEditLearner`
+    /// cannot be perfect and one wrong activation biases the recogniser against
+    /// the user from then on. A manual entry is never touched.
+    ///
+    /// Returns the resulting status when something changed, for logging.
+    @discardableResult
+    func observeEditCorrection(
+        _ correction: DictationEditCorrection,
+        at date: Date = Date()
+    ) -> DictionaryEntry.Status? {
+        guard automaticLearningEnabled else { return nil }
+        let written = Self.cleaned(correction.written)
+        guard !written.isEmpty else { return nil }
+
+        if let index = index(of: written) {
+            // Same word already known. A case-only fix is safe to apply
+            // immediately: it is not new vocabulary, just the right spelling of
+            // a term the user already keeps.
+            if correction.isCaseOnly, entries[index].term != written {
+                entries[index].term = written
+                entries[index].updatedAt = date
+                persist()
+                return entries[index].status
+            }
+            guard entries[index].source == .learned,
+                  entries[index].status != .rejected else { return nil }
+            entries[index].observationCount += 1
+            if entries[index].observationCount >= Self.editLearningThreshold {
+                entries[index].status = .active
+            }
+            entries[index].updatedAt = date
+            persist()
+            return entries[index].status
+        }
+
+        let learnedEntries = entries.filter { $0.source == .learned && $0.status != .rejected }
+        guard learnedEntries.count < Self.learnedEntryLimit,
+              learnedEntries.filter({ $0.status == .suggested }).count < Self.suggestionLimit else {
+            return nil
+        }
+        entries.append(DictionaryEntry(
+            term: written,
+            source: .learned,
+            status: Self.editLearningThreshold <= 1 ? .active : .suggested,
+            isEnabled: true,
+            observationCount: 1,
+            createdAt: date,
+            updatedAt: date
+        ))
+        persist()
+        return Self.editLearningThreshold <= 1 ? .active : .suggested
     }
 
     func exportDocument(exactCorrections: String, exportedAt: Date = Date()) -> DictionaryExportDocument {

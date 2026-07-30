@@ -19,6 +19,58 @@ enum DictionaryStoreTests {
         testImportMergesByTerm()
         testImportPersists()
         testMergedCorrections()
+        testEditCorrectionsNeedTwoSightings()
+        testEditCaseFixAppliesImmediately()
+        testEditCorrectionRespectsRejectionAndManual()
+    }
+
+    /// An edit is stronger evidence than a transcript sighting, but still not
+    /// enough on its own: first edit suggests, second activates.
+    private static func testEditCorrectionsNeedTwoSightings() {
+        let (store, defaults) = makeStore()
+        defer { clear(defaults) }
+
+        let fix = DictationEditCorrection(heard: "get", written: "git", isCaseOnly: false)
+        expectEqual(store.observeEditCorrection(fix), .suggested)
+        expectEqual(store.activeTerms.contains("git"), false)   // not biasing anything yet
+        expectEqual(store.observeEditCorrection(fix), .active)
+        expectEqual(store.activeTerms.contains("git"), true)
+    }
+
+    /// Recasing a term the user already keeps is not new vocabulary, so it
+    /// applies at once rather than waiting for a second sighting.
+    private static func testEditCaseFixAppliesImmediately() {
+        let (store, defaults) = makeStore()
+        defer { clear(defaults) }
+
+        _ = try! store.addManual("claude")
+        expectEqual(store.activeTerms, ["claude"])
+        _ = store.observeEditCorrection(
+            DictationEditCorrection(heard: "claude", written: "Claude", isCaseOnly: true)
+        )
+        expectEqual(store.activeTerms, ["Claude"])
+    }
+
+    private static func testEditCorrectionRespectsRejectionAndManual() {
+        let (store, defaults) = makeStore()
+        defer { clear(defaults) }
+
+        // A term the user rejected must never come back through the edit path.
+        let fix = DictationEditCorrection(heard: "kuber", written: "Kuber", isCaseOnly: false)
+        _ = store.observeEditCorrection(fix)
+        let suggestion = store.entries.first { $0.term == "Kuber" }!
+        store.dismissSuggestion(id: suggestion.id)
+        expectEqual(store.observeEditCorrection(fix), nil)
+        expectEqual(store.activeTerms.contains("Kuber"), false)
+
+        // A manual entry's observation count is not touched by edits.
+        _ = try! store.addManual("Supabase")
+        expectEqual(
+            store.observeEditCorrection(
+                DictationEditCorrection(heard: "supabase", written: "Supabase", isCaseOnly: false)
+            ),
+            nil
+        )
     }
 
     private static func testManualTermsAndProjection() {

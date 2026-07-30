@@ -51,6 +51,21 @@ final class AppContextService {
         )
     }
 
+    /// Reads the whole text of the focused editable element, so a dictation can
+    /// be compared against what the user left behind after editing it.
+    ///
+    /// Returns nil when there is no focused text element or it exposes no value
+    /// — common in web views and Electron apps, where this feature simply does
+    /// not fire rather than guessing.
+    func focusedElementText(processIdentifier: pid_t) -> String? {
+        let appElement = AXUIElementCreateApplication(processIdentifier)
+        guard let focusedElement = accessibilityElement(
+            from: appElement,
+            attribute: kAXFocusedUIElementAttribute as CFString
+        ) else { return nil }
+        return accessibilityRawString(from: focusedElement, attribute: kAXValueAttribute as CFString)
+    }
+
     /// Selects `text` only when it is still immediately before the caret in
     /// the focused editable element. This makes follow-up edits safe: if the
     /// user moved the caret or changed the content, Megaphone leaves it alone.
