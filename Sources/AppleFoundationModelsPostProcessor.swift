@@ -41,6 +41,10 @@ struct SmartCleanupRequest: Sendable {
     let outputLanguage: String
     let customInstructions: String
     var formality: WritingFormality = .balanced
+    /// Permit list structure in a terminal/editor. Off by default because a
+    /// multi-line paste into a shell without bracketed paste executes each line;
+    /// on when the user has opted in.
+    var allowStructureInCode: Bool = false
 
     init(
         transcript: String,
@@ -54,7 +58,8 @@ struct SmartCleanupRequest: Sendable {
         corrections: [Correction],
         outputLanguage: String,
         customInstructions: String,
-        formality: WritingFormality = .balanced
+        formality: WritingFormality = .balanced,
+        allowStructureInCode: Bool = false
     ) {
         self.transcript = transcript
         self.appName = appName
@@ -68,6 +73,7 @@ struct SmartCleanupRequest: Sendable {
         self.outputLanguage = outputLanguage
         self.customInstructions = customInstructions
         self.formality = formality
+        self.allowStructureInCode = allowStructureInCode
     }
 }
 
@@ -838,7 +844,19 @@ actor AppleFoundationModelsPostProcessor {
         //     became three lines, and pasting those into a shell runs each one.
         //   * casualChat — its own guidance forbids bullets; kept out so the two
         //     instructions never contradict each other.
-        if writingContext != .codeOrTerminal, writingContext != .casualChat {
+        if writingContext != .casualChat,
+           writingContext != .codeOrTerminal || request.allowStructureInCode {
+            // The code/terminal guidance otherwise says to preserve line breaks
+            // and technical formatting exactly, which suppresses list building.
+            // Permit structure explicitly when the user opted in — but a command
+            // is still a command (verified: "git commit dash m …" stays intact).
+            // No extra code/terminal-specific permission sentence: the ordinal
+            // hint alone is enough to build lists there (measured 9/9), and any
+            // added sentence about this being "a prompt to a coding agent" or
+            // about structure being "welcome here" made the model rewrite
+            // requests into imperatives — "could you check why the build is red"
+            // became "Check why the build is red", 0/4 vs 4/4 without it. The
+            // `.codeOrTerminal` guidance already protects commands and flags.
             hints.append(
                 "When the speaker lists items using ordinal words (first, second, third), "
                 + "write one item per line and remove the ordinal words. Keep any "

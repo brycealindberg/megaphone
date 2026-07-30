@@ -241,6 +241,8 @@ final class AppState: ObservableObject, @unchecked Sendable {
     private let casualChatLightPunctuationStorageKey = "casual_chat_light_punctuation"
     private let resolveSelfCorrectionsStorageKey = "self_correction_restart_enabled"
     private let addQuestionMarksStorageKey = "add_question_marks"
+    private let questionMarksInCodeStorageKey = "question_marks_in_code"
+    private let listsInCodeStorageKey = "lists_in_code"
     private let doubleTapMaxHoldStorageKey = "double_tap_max_hold"
     private let doubleTapGapStorageKey = "double_tap_gap"
     private static let doubleTapMaxHoldDefault: TimeInterval = 0.25
@@ -550,6 +552,23 @@ final class AppState: ObservableObject, @unchecked Sendable {
         }
     }
 
+    /// Also add question marks in terminals and editors. Dictation there is
+    /// usually a prompt to a coding agent, not a shell command.
+    @Published var questionMarksInCode: Bool {
+        didSet {
+            UserDefaults.standard.set(questionMarksInCode, forKey: questionMarksInCodeStorageKey)
+        }
+    }
+
+    /// Allow dictated lists to become real lines in terminals and editors. Safe
+    /// with bracketed paste (modern zsh/bash hold a multi-line paste instead of
+    /// running each line); turn off if pasting into a shell that lacks it.
+    @Published var listsInCode: Bool {
+        didSet {
+            UserDefaults.standard.set(listsInCode, forKey: listsInCodeStorageKey)
+        }
+    }
+
     /// A completed hold shorter than this counts as a tap. Bounds the worst-case
     /// latency the gesture can add to a very short push-to-talk.
     @Published var doubleTapMaxHold: TimeInterval {
@@ -847,6 +866,12 @@ final class AppState: ObservableObject, @unchecked Sendable {
         let addQuestionMarks = UserDefaults.standard.object(
             forKey: addQuestionMarksStorageKey
         ) == nil ? true : UserDefaults.standard.bool(forKey: addQuestionMarksStorageKey)
+        let questionMarksInCode = UserDefaults.standard.object(
+            forKey: questionMarksInCodeStorageKey
+        ) == nil ? true : UserDefaults.standard.bool(forKey: questionMarksInCodeStorageKey)
+        let listsInCode = UserDefaults.standard.object(
+            forKey: listsInCodeStorageKey
+        ) == nil ? true : UserDefaults.standard.bool(forKey: listsInCodeStorageKey)
         // A zero-or-missing stored value means "never set" — fall back to the
         // default rather than a 0s window, which would disable the gesture.
         let storedMaxHold = UserDefaults.standard.double(forKey: doubleTapMaxHoldStorageKey)
@@ -967,6 +992,8 @@ final class AppState: ObservableObject, @unchecked Sendable {
         self.casualChatLightPunctuation = casualChatLightPunctuation
         self.resolveSelfCorrections = resolveSelfCorrections
         self.addQuestionMarks = addQuestionMarks
+        self.questionMarksInCode = questionMarksInCode
+        self.listsInCode = listsInCode
         self.doubleTapMaxHold = doubleTapMaxHold
         self.doubleTapGap = doubleTapGap
         // didSet does not fire during init, so seed the machine directly.
@@ -1346,7 +1373,9 @@ final class AppState: ObservableObject, @unchecked Sendable {
                     plainMegaphoneWakeWordEnabled: self.plainMegaphoneWakeWordEnabled,
                     casualChatLightPunctuation: self.casualChatLightPunctuation,
                     resolveSelfCorrections: self.resolveSelfCorrections,
-                    addQuestionMarks: self.addQuestionMarks
+                    addQuestionMarks: self.addQuestionMarks,
+                    questionMarksInCode: self.questionMarksInCode,
+                    listsInCode: self.listsInCode
                 )
                 finalTranscript = result.finalTranscript
                 processingStatus = Self.statusMessage(
@@ -3021,6 +3050,8 @@ final class AppState: ObservableObject, @unchecked Sendable {
         casualChatLightPunctuation: Bool = true,
         resolveSelfCorrections: Bool = true,
         addQuestionMarks: Bool = true,
+        questionMarksInCode: Bool = true,
+        listsInCode: Bool = true,
         previousText: String? = nil,
         smartSessionID: UUID? = nil
     ) async -> (
@@ -3062,8 +3093,10 @@ final class AppState: ObservableObject, @unchecked Sendable {
             if casualChatLightPunctuation, writingContext == .casualChat {
                 t = CasualPunctuation.lighten(t)
             }
-            // Not in code/terminal — a shell command is not a question.
-            if addQuestionMarks, writingContext != .codeOrTerminal {
+            // Terminals and editors are included by default: dictation there is
+            // usually a prompt to a coding agent ("how do I reset this"), not a
+            // shell command. Adding "?" is additive and cannot corrupt a command.
+            if addQuestionMarks, writingContext != .codeOrTerminal || questionMarksInCode {
                 t = QuestionMark.punctuate(t)
             }
             return t
@@ -3213,7 +3246,8 @@ final class AppState: ObservableObject, @unchecked Sendable {
                 customInstructions: [customSystemPrompt, customContextPrompt]
                     .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
                     .joined(separator: "\n"),
-                formality: formality
+                formality: formality,
+                allowStructureInCode: listsInCode
             )
             let result = try await AppleFoundationModelsPostProcessor.shared.cleanup(
                 request,
@@ -3417,6 +3451,8 @@ final class AppState: ObservableObject, @unchecked Sendable {
                         casualChatLightPunctuation: self.casualChatLightPunctuation,
                         resolveSelfCorrections: self.resolveSelfCorrections,
                         addQuestionMarks: self.addQuestionMarks,
+                        questionMarksInCode: self.questionMarksInCode,
+                        listsInCode: self.listsInCode,
                         previousText: previousText,
                         smartSessionID: cleanupSessionID
                     )
