@@ -6,6 +6,7 @@ enum DictationEditLearnerTests {
         testLearnsCaseFix()
         testIgnoresContentRewrite()
         testIgnoresWordsThatAreNotAlike()
+        testLearnsCloudToClaude()
         testIgnoresCommonWordSwaps()
         testIgnoresNumberFormatting()
         testIgnoresInflections()
@@ -54,6 +55,17 @@ enum DictationEditLearnerTests {
                "unrelated words rejected")
         expect(DictationEditLearner.classify(heard: "invoice", written: "quote") == nil, true,
                "synonym swap rejected")
+    }
+
+    /// A common mishearing of a frequently dictated term (edit distance 2),
+    /// found by the adversarial verification pass.
+    private static func testLearnsCloudToClaude() {
+        let c = DictationEditLearner.classify(heard: "cloud", written: "Claude")
+        expect(c != nil, true, "cloud -> Claude is a mishearing worth learning")
+        expect(c?.written, "Claude", "written form")
+        // The looser budget must still reject genuinely different words.
+        expect(DictationEditLearner.classify(heard: "invoice", written: "payment") == nil, true,
+               "distant words still rejected")
     }
 
     private static func testIgnoresCommonWordSwaps() {

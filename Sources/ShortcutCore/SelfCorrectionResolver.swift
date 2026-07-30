@@ -19,7 +19,7 @@ enum SelfCorrectionResolver {
     static let markers: [String] = [
         "no actually wait", "no scratch that", "scratch that",
         "let me start over", "let me restart", "let me redo that",
-        "start over", "actually wait", "no wait", "wait no"
+        "start over", "actually wait", "no wait", "wait no", "i mean"
     ]
 
     /// A restart fires only when what follows the marker begins with one of

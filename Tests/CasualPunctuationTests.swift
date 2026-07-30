@@ -11,6 +11,7 @@ enum CasualPunctuationTests {
         testNeverTouchesCapitalization()
         testKeepsNumberCommas()
         testKeepsListCommas()
+        testStackedInterjectionCommas()
         testLeavesLongSentenceCommaAlone()
         testDoesNotMatchOpenerAsPrefixOfAnotherWord()
         testEmptyAndNoComma()
@@ -75,6 +76,17 @@ enum CasualPunctuationTests {
     private static func testKeepsListCommas() {
         // Two clause commas -> a list -> left alone by the lone-comma rule.
         expect(CasualPunctuation.lighten("grab eggs, milk, and bread"), "grab eggs, milk, and bread")
+    }
+
+    /// Found by the adversarial pass: stacked discourse commas, not a list, so
+    /// they all go — but "and"/"or" lists are still protected (above).
+    private static func testStackedInterjectionCommas() {
+        expect(
+            CasualPunctuation.lighten("Yeah man, for sure, let's link up later"),
+            "Yeah man for sure let's link up later"
+        )
+        expect(CasualPunctuation.lighten("nah bro, I'm good, catch you later"),
+               "nah bro I'm good catch you later")
     }
 
     private static func testLeavesLongSentenceCommaAlone() {

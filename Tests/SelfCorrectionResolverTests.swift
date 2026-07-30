@@ -15,6 +15,23 @@ enum SelfCorrectionResolverTests {
         testScratchThatRestart()
         testCapitalizationAtStart()
         testOpenerMustBeWholeWord()
+        testIMeanRestart()
+        testIMeanValueSwapUntouched()
+    }
+
+    /// "I mean" restart (found by the adversarial verification pass).
+    private static func testIMeanRestart() {
+        expect(
+            SelfCorrectionResolver.resolve("let's go to the park I mean let's just stay home"),
+            "Let's just stay home"
+        )
+    }
+
+    /// "I mean" as a value swap: no clause opener follows, so it must pass
+    /// through for the model to resolve, not get its sentence deleted.
+    private static func testIMeanValueSwapUntouched() {
+        let s = "let's meet Tuesday I mean Wednesday"
+        expect(SelfCorrectionResolver.resolve(s), s)
     }
 
     /// The gap this exists to close.

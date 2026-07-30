@@ -35,7 +35,7 @@ enum CasualPunctuation {
     static func lighten(_ text: String) -> String {
         guard !text.isEmpty else { return text }
         var result = stripLeadingOpenerComma(text)
-        result = stripLoneShortClauseComma(result)
+        result = stripShortMessageCommas(result)
         return result
     }
 
@@ -65,10 +65,12 @@ enum CasualPunctuation {
 
     // MARK: - lone clause comma
 
-    /// A short chat line with a single, non-numeric comma ("no worries man, all
-    /// good") reads better in casual chat without it. Multi-comma lists and
-    /// number commas are left untouched.
-    static func stripLoneShortClauseComma(_ text: String) -> String {
+    /// A short chat line reads better without its clause/interjection commas
+    /// ("no worries man, all good", "yeah man, for sure, let's link up"). Strips
+    /// every non-numeric comma, except in an actual list — a coordinating
+    /// "and"/"or"/"nor" with two or more commas ("milk, eggs, and bread"), which
+    /// keeps its commas. Number commas ("1,000") are always kept.
+    static func stripShortMessageCommas(_ text: String) -> String {
         let wordCount = text.split { $0 == " " || $0.isNewline }.count
         guard wordCount <= maxShortMessageWords else { return text }
 
@@ -76,10 +78,19 @@ enum CasualPunctuation {
         guard let regex = try? NSRegularExpression(pattern: #"(?<![0-9]),(?![0-9])"#) else { return text }
         let ns = text as NSString
         let matches = regex.matches(in: text, range: NSRange(location: 0, length: ns.length))
-        guard matches.count == 1 else { return text }
+        guard !matches.isEmpty else { return text }
+
+        // Leave a genuine list intact: a coordinating conjunction alongside two
+        // or more commas is "A, B, and C", not stacked discourse commas.
+        if matches.count >= 2,
+           text.range(of: #"\b(and|or|nor)\b"#, options: [.regularExpression, .caseInsensitive]) != nil {
+            return text
+        }
 
         let mutable = NSMutableString(string: text)
-        mutable.deleteCharacters(in: matches[0].range)
+        for match in matches.reversed() {
+            mutable.deleteCharacters(in: match.range)
+        }
         return collapseSpaces(mutable as String)
     }
 

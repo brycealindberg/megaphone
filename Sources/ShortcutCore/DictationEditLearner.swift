@@ -110,7 +110,11 @@ enum DictationEditLearner {
         let longer = max(a.count, b.count)
         // "git"/"deploy" are not the same word however you squint.
         guard longer - shorter <= max(2, shorter / 2) else { return false }
-        let budget = shorter <= 4 ? 1 : max(1, shorter / 3)
+        // ceil(shorter/3), min 1: 3->1 (git/get), 5->2 (cloud/Claude), 9->3.
+        // A looser budget only costs recall of benign false positives — a real
+        // word the user typed, added as an approval-gated suggestion — never a
+        // wrong heard->written mapping.
+        let budget = max(1, (shorter + 2) / 3)
         return levenshtein(Array(a), Array(b), limit: budget) <= budget
     }
 
