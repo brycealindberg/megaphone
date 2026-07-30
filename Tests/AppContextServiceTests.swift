@@ -34,6 +34,7 @@ struct AppContextServiceTests {
         SelfCorrectionResolverTests.run()
         QuestionMarkTests.run()
         SentenceContinuationTests.run()
+        DictationProfileTests.run()
         SmartCleanupValidationTests.run()
         StructuredOutputUnwrapTests.run()
         print("MegaphoneTests passed")
@@ -163,6 +164,80 @@ struct AppContextServiceTests {
         ))
         expect(whatsappPrompt.contains("never markdown syntax"), "WhatsApp cleanup prompt should forbid markdown")
         expect(!whatsappPrompt.contains("Markdown renders here"), "WhatsApp must not advertise markdown")
+        // With structure off, casual chat must not be told to build lists, and
+        // the ordinal hint must be absent.
+        expect(!whatsappPrompt.contains("one item per line"), "chat without structure must not build lists")
+
+        // Opting a profile into lists lifts the bullet ban for that context,
+        // still without advertising markdown. The ordinal hint deliberately
+        // stays out of casual chat even then: measured, adding it there made a
+        // polite request come back as an assistant-style response 3/3.
+        let whatsappWithLists = AppleFoundationModelsPostProcessor.cleanupPrompt(for: SmartCleanupRequest(
+            transcript: "first wash the dishes second buy coffee",
+            appName: "WhatsApp",
+            bundleIdentifier: "net.whatsapp.WhatsApp",
+            windowTitle: "Mom",
+            selectedText: nil,
+            contextSummary: "",
+            vocabulary: [],
+            corrections: [],
+            outputLanguage: "",
+            customInstructions: "",
+            allowStructure: true
+        ))
+        expect(
+            whatsappWithLists.contains("one item per line"),
+            "chat with structure enabled should permit lists"
+        )
+        expect(
+            !whatsappWithLists.contains("bullets"),
+            "the blanket bullet ban must be gone, not merely contradicted"
+        )
+        expect(
+            !whatsappWithLists.contains("Markdown renders here"),
+            "permitting lists must not advertise markdown in chat"
+        )
+        expect(
+            !whatsappWithLists.contains("remove the ordinal words"),
+            "the ordinal hint must stay out of casual chat"
+        )
+
+        // A context that is not chat gets the ordinal hint when structure is on.
+        let notesWithLists = AppleFoundationModelsPostProcessor.cleanupPrompt(for: SmartCleanupRequest(
+            transcript: "first wash the dishes second buy coffee",
+            appName: "Notes",
+            bundleIdentifier: "com.apple.Notes",
+            windowTitle: "Today",
+            selectedText: nil,
+            contextSummary: "",
+            vocabulary: [],
+            corrections: [],
+            outputLanguage: "",
+            customInstructions: "",
+            allowStructure: true
+        ))
+        expect(
+            notesWithLists.contains("remove the ordinal words"),
+            "documents with structure enabled should get the ordinal hint"
+        )
+        // And turning it off suppresses it there too, which the old
+        // code-and-chat-only gate could not express.
+        let notesWithoutLists = AppleFoundationModelsPostProcessor.cleanupPrompt(for: SmartCleanupRequest(
+            transcript: "first wash the dishes second buy coffee",
+            appName: "Notes",
+            bundleIdentifier: "com.apple.Notes",
+            windowTitle: "Today",
+            selectedText: nil,
+            contextSummary: "",
+            vocabulary: [],
+            corrections: [],
+            outputLanguage: "",
+            customInstructions: ""
+        ))
+        expect(
+            !notesWithoutLists.contains("remove the ordinal words"),
+            "documents with structure off should lose the ordinal hint"
+        )
     }
 
     private static func testAppWritingContextClassification() {

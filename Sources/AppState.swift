@@ -270,6 +270,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
     private let commandModeManualModifierStorageKey = "command_mode_manual_modifier"
     private let outputLanguageStorageKey = "output_language"
     private let writingFormalityByContextStorageKey = "writing_formality_by_context"
+    private let dictationProfilesStorageKey = "dictation_profiles_v1"
     private let dictationAudioInterruptionEnabledStorageKey = "dictation_audio_interruption_enabled"
     private let mouseDictationEnabledStorageKey = "mouse_dictation_enabled"
     private let mouseDictationButtonStorageKey = "mouse_dictation_button"
@@ -475,19 +476,35 @@ final class AppState: ObservableObject, @unchecked Sendable {
     /// `AppWritingContext.rawValue` with `WritingFormality.rawValue` values.
     /// Missing entries mean `.balanced` (the current behavior). Code and
     /// terminal apps are exempt and never consult this.
-    @Published var writingFormalityByContext: [String: String] {
+    /// One profile per writing context — the single source of truth for
+    /// everything that varies by destination app. Seeded on first launch from
+    /// the global switches this replaced, so behaviour carries over exactly.
+    @Published var dictationProfiles: DictationProfileSet {
         didSet {
-            UserDefaults.standard.set(writingFormalityByContext, forKey: writingFormalityByContextStorageKey)
+            guard let data = try? JSONEncoder().encode(dictationProfiles) else { return }
+            UserDefaults.standard.set(data, forKey: dictationProfilesStorageKey)
         }
     }
 
+    func profile(for context: AppWritingContext) -> DictationProfile {
+        dictationProfiles.profile(for: context)
+    }
+
+    func setProfile(_ profile: DictationProfile, for context: AppWritingContext) {
+        dictationProfiles.set(profile, for: context)
+    }
+
     func writingFormality(for context: AppWritingContext) -> WritingFormality {
+        // Code and terminal apps are exempt: the register dial never touches
+        // commands, so the profile's value is ignored there.
         guard context != .codeOrTerminal else { return .balanced }
-        return WritingFormality(rawValue: writingFormalityByContext[context.rawValue] ?? "") ?? .balanced
+        return profile(for: context).formality
     }
 
     func setWritingFormality(_ formality: WritingFormality, for context: AppWritingContext) {
-        writingFormalityByContext[context.rawValue] = formality.rawValue
+        var updated = profile(for: context)
+        updated.formality = formality
+        setProfile(updated, for: context)
     }
 
     @Published var shortcutStartDelay: TimeInterval {
@@ -871,7 +888,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
         let customSystemPromptLastModified = UserDefaults.standard.string(forKey: customSystemPromptLastModifiedStorageKey) ?? ""
         let customContextPromptLastModified = UserDefaults.standard.string(forKey: customContextPromptLastModifiedStorageKey) ?? ""
         let outputLanguage = UserDefaults.standard.string(forKey: outputLanguageStorageKey) ?? ""
-        let writingFormalityByContext = UserDefaults.standard
+        let legacyFormalityByContext = UserDefaults.standard
             .dictionary(forKey: writingFormalityByContextStorageKey) as? [String: String] ?? [:]
         let shortcutStartDelay = max(0, UserDefaults.standard.double(forKey: shortcutStartDelayStorageKey))
         let doubleTapHandsFreeEnabled = UserDefaults.standard.object(
@@ -1014,7 +1031,33 @@ final class AppState: ObservableObject, @unchecked Sendable {
         self.customSystemPromptLastModified = customSystemPromptLastModified
         self.customContextPromptLastModified = customContextPromptLastModified
         self.outputLanguage = outputLanguage
-        self.writingFormalityByContext = writingFormalityByContext
+        // Load the saved profiles, or build them once from the global switches
+        // above plus the old per-context formality dictionary.
+        if let data = UserDefaults.standard.data(forKey: dictationProfilesStorageKey),
+           let decoded = try? JSONDecoder().decode(DictationProfileSet.self, from: data) {
+            self.dictationProfiles = decoded
+        } else {
+            // `didSet` does not fire for an assignment inside `init`, so the
+            // seeded set has to be written explicitly or every launch would
+            // re-migrate from the legacy globals instead of reading the profiles.
+            let seeded = DictationProfileSet.migrating(
+                legacy: DictationProfileSet.LegacySwitches(
+                    lightCommasInCasualChat: casualChatLightPunctuation,
+                    questionMarks: addQuestionMarks,
+                    questionMarksInCode: questionMarksInCode,
+                    listsInCode: listsInCode,
+                    listsInCasualChat: listsInCasualChat,
+                    restarts: resolveSelfCorrections,
+                    lowercaseContinuations: lowercaseSentenceContinuations,
+                    learnEdits: learnFromEditsEnabled
+                ),
+                formalityByContext: legacyFormalityByContext
+            )
+            self.dictationProfiles = seeded
+            if let data = try? JSONEncoder().encode(seeded) {
+                UserDefaults.standard.set(data, forKey: dictationProfilesStorageKey)
+            }
+        }
         self.shortcutStartDelay = shortcutStartDelay
         self.doubleTapHandsFreeEnabled = doubleTapHandsFreeEnabled
         self.learnFromEditsEnabled = learnFromEditsEnabled
@@ -1402,13 +1445,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
                     cleanupMode: self.smartCleanupMode,
                     wakeCommandsEnabled: self.wakeCommandsEnabled,
                     plainMegaphoneWakeWordEnabled: self.plainMegaphoneWakeWordEnabled,
-                    casualChatLightPunctuation: self.casualChatLightPunctuation,
-                    resolveSelfCorrections: self.resolveSelfCorrections,
-                    addQuestionMarks: self.addQuestionMarks,
-                    questionMarksInCode: self.questionMarksInCode,
-                    listsInCode: self.listsInCode,
-                    listsInCasualChat: self.listsInCasualChat,
-                    lowercaseSentenceContinuations: self.lowercaseSentenceContinuations
+                    profiles: self.dictationProfiles
                 )
                 finalTranscript = result.finalTranscript
                 processingStatus = Self.statusMessage(
@@ -2880,8 +2917,16 @@ final class AppState: ObservableObject, @unchecked Sendable {
     /// the previous one is checked immediately and replaced.
     @MainActor
     private func armEditObservation(for inserted: String) {
+        // Resolved from the destination app's profile, not a global switch: the
+        // read-back is armed for the app just dictated into, so that app's
+        // profile is the one that decides.
+        let context = AppWritingContext.classify(
+            appName: NSWorkspace.shared.frontmostApplication?.localizedName,
+            bundleIdentifier: NSWorkspace.shared.frontmostApplication?.bundleIdentifier,
+            windowTitle: nil
+        )
         guard DictionaryStore.shared.automaticLearningEnabled,
-              learnFromEditsEnabled,
+              profile(for: context).learnEdits,
               // Very short dictations produce noisy alignments and very long
               // ones are usually prose the user reworks for meaning.
               (3...120).contains(DictationEditLearner.words(in: inserted).count),
@@ -3080,13 +3125,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
         cleanupMode: SmartCleanupMode,
         wakeCommandsEnabled: Bool,
         plainMegaphoneWakeWordEnabled: Bool,
-        casualChatLightPunctuation: Bool = true,
-        resolveSelfCorrections: Bool = true,
-        addQuestionMarks: Bool = true,
-        questionMarksInCode: Bool = true,
-        listsInCode: Bool = true,
-        listsInCasualChat: Bool = true,
-        lowercaseSentenceContinuations: Bool = true,
+        profiles: DictationProfileSet = .standard,
         previousText: String? = nil,
         smartSessionID: UUID? = nil
     ) async -> (
@@ -3114,7 +3153,10 @@ final class AppState: ObservableObject, @unchecked Sendable {
             bundleIdentifier: context.bundleIdentifier,
             windowTitle: context.windowTitle
         )
-        let formality = writingFormality(for: writingContext)
+        // One profile decides everything that varies by destination app.
+        let profile = profiles.profile(for: writingContext)
+        // Code and terminal apps stay exempt from the register dial.
+        let formality = writingContext == .codeOrTerminal ? .balanced : profile.formality
         // Deterministic finishing touches on the cleaned text, in order:
         //   - casual chat gets fewer commas ("Okay, bet I will" -> "Okay bet I
         //     will"); comma-only, so it can never drop a "?" or a capital
@@ -3125,19 +3167,19 @@ final class AppState: ObservableObject, @unchecked Sendable {
         // so verbatim output is never finished.
         func finishText(_ text: String) -> String {
             var t = text
-            if casualChatLightPunctuation, writingContext == .casualChat {
+            if profile.lightCommas {
                 t = CasualPunctuation.lighten(t)
             }
             // Terminals and editors are included by default: dictation there is
             // usually a prompt to a coding agent ("how do I reset this"), not a
             // shell command. Adding "?" is additive and cannot corrupt a command.
-            if addQuestionMarks, writingContext != .codeOrTerminal || questionMarksInCode {
+            if profile.questionMarks {
                 t = QuestionMark.punctuate(t)
             }
             // Last, so it wins over anything above that capitalizes a first
             // letter: the caret decides whether this text starts a sentence at
             // all. Vocabulary is passed so a name keeps its capital.
-            if lowercaseSentenceContinuations {
+            if profile.lowercaseContinuations {
                 t = SentenceContinuation.adjust(
                     t,
                     textBeforeCaret: context.textBeforeCaret,
@@ -3264,7 +3306,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
         // the text the speaker actually settled on. Only touches genuine
         // parallel restarts; value swaps pass through for the model to handle.
         // Never applied to Exact, which is verbatim by definition.
-        let cleanupInput = resolveSelfCorrections
+        let cleanupInput = profile.restarts
             ? SelfCorrectionResolver.resolve(trimmedRawTranscript)
             : trimmedRawTranscript
 
@@ -3292,8 +3334,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
                     .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
                     .joined(separator: "\n"),
                 formality: formality,
-                allowStructureInCode: listsInCode,
-                allowStructureInCasualChat: listsInCasualChat
+                allowStructure: profile.lists
             )
             let result = try await AppleFoundationModelsPostProcessor.shared.cleanup(
                 request,
@@ -3494,13 +3535,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
                         cleanupMode: self.smartCleanupMode,
                         wakeCommandsEnabled: self.wakeCommandsEnabled,
                         plainMegaphoneWakeWordEnabled: self.plainMegaphoneWakeWordEnabled,
-                        casualChatLightPunctuation: self.casualChatLightPunctuation,
-                        resolveSelfCorrections: self.resolveSelfCorrections,
-                        addQuestionMarks: self.addQuestionMarks,
-                        questionMarksInCode: self.questionMarksInCode,
-                        listsInCode: self.listsInCode,
-                        listsInCasualChat: self.listsInCasualChat,
-                        lowercaseSentenceContinuations: self.lowercaseSentenceContinuations,
+                        profiles: self.dictationProfiles,
                         previousText: previousText,
                         smartSessionID: cleanupSessionID
                     )

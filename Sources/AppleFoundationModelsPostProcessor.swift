@@ -41,14 +41,11 @@ struct SmartCleanupRequest: Sendable {
     let outputLanguage: String
     let customInstructions: String
     var formality: WritingFormality = .balanced
-    /// Permit list structure in a terminal/editor. Off by default because a
-    /// multi-line paste into a shell without bracketed paste executes each line;
-    /// on when the user has opted in.
-    var allowStructureInCode: Bool = false
-    /// Permit list structure in casual chat. Off by default because the
-    /// casual-chat guidance otherwise forbids bullets outright, and the two
-    /// instructions must not contradict each other.
-    var allowStructureInCasualChat: Bool = false
+    /// Permit a dictated enumeration to become real lines. Resolved per writing
+    /// context from the destination app's profile, so it can be turned off
+    /// anywhere — a terminal without bracketed paste would run each pasted line,
+    /// and casual chat needs its bullet ban lifted before lists work at all.
+    var allowStructure: Bool = false
 
     init(
         transcript: String,
@@ -63,8 +60,7 @@ struct SmartCleanupRequest: Sendable {
         outputLanguage: String,
         customInstructions: String,
         formality: WritingFormality = .balanced,
-        allowStructureInCode: Bool = false,
-        allowStructureInCasualChat: Bool = false
+        allowStructure: Bool = false
     ) {
         self.transcript = transcript
         self.appName = appName
@@ -78,8 +74,7 @@ struct SmartCleanupRequest: Sendable {
         self.outputLanguage = outputLanguage
         self.customInstructions = customInstructions
         self.formality = formality
-        self.allowStructureInCode = allowStructureInCode
-        self.allowStructureInCasualChat = allowStructureInCasualChat
+        self.allowStructure = allowStructure
     }
 }
 
@@ -196,7 +191,7 @@ enum AppWritingContext: String, Equatable, Sendable {
     func cleanupGuidance(
         markdown: Bool,
         formality: WritingFormality = .balanced,
-        allowStructureInCasualChat: Bool = false
+        allowStructure: Bool = false
     ) -> String {
         let base: String
         switch self {
@@ -215,7 +210,7 @@ enum AppWritingContext: String, Equatable, Sendable {
             // drop the introductory clause, so "grocery list bullet point milk…"
             // came back as bullets only and tripped the transcript-drop guard —
             // marker lists went 3/3 to 0/3 while ordinal lists went 0/3 to 3/3.
-            base = allowStructureInCasualChat
+            base = allowStructure
                 ? "Use natural conversational punctuation and preserve the speaker's casual tone. Never markdown syntax or headers. Structure is welcome here: when the speaker clearly itemizes steps or tasks, format them as a list with one item per line."
                 : "Use natural conversational punctuation and preserve the speaker's casual tone. Plain text only: never markdown syntax, bullets, or headers."
 
@@ -806,7 +801,7 @@ actor AppleFoundationModelsPostProcessor {
             + writingContext.cleanupGuidance(
                 markdown: markdown,
                 formality: request.formality,
-                allowStructureInCasualChat: request.allowStructureInCasualChat
+                allowStructure: request.allowStructure
             )
         )
         if let selected = request.selectedText?.trimmingCharacters(in: .whitespacesAndNewlines), !selected.isEmpty {
@@ -872,10 +867,11 @@ actor AppleFoundationModelsPostProcessor {
         // Excluded where a line break does harm, both measured:
         //   * codeOrTerminal — "first run git pull then second run make test"
         //     became three lines, and pasting those into a shell runs each one.
-        //   * casualChat — its own guidance forbids bullets; kept out so the two
-        //     instructions never contradict each other.
-        if writingContext != .casualChat,
-           writingContext != .codeOrTerminal || request.allowStructureInCode {
+        //   * casualChat — measured: with the ordinal hint on there, a polite
+        //     request came back as an assistant-style response 3/3 and was
+        //     rejected. Its guidance sentence alone builds lists correctly
+        //     (18/18), so the hint stays out of casual chat regardless.
+        if request.allowStructure, writingContext != .casualChat {
             // The code/terminal guidance otherwise says to preserve line breaks
             // and technical formatting exactly, which suppresses list building.
             // Permit structure explicitly when the user opted in — but a command

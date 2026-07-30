@@ -265,6 +265,8 @@ struct GeneralSettingsView: View {
     @State private var micPermissionGranted = false
     @State private var showMutedHint = false
     @State private var copiedBuildInfo = false
+    /// Which profile the App Profiles card is editing.
+    @State private var editingContext: AppWritingContext = .casualChat
     @State private var copiedBuildInfoResetWorkItem: DispatchWorkItem?
     @StateObject private var githubCache = GitHubMetadataCache.shared
     @ObservedObject private var updateManager = UpdateManager.shared
@@ -443,11 +445,8 @@ struct GeneralSettingsView: View {
                 SettingsCard("Cleanup", icon: "sparkles") {
                     cleanupSection
                 }
-                SettingsCard("Writing Style", icon: "textformat") {
-                    writingStyleSection
-                }
-                SettingsCard("Automatic Fixes", icon: "wand.and.sparkles") {
-                    automaticFixesSection
+                SettingsCard("App Profiles", icon: "square.stack.3d.up.fill") {
+                    profilesSection
                 }
                 SettingsCard("Output Language", icon: "globe") {
                     outputLanguageSection
@@ -765,89 +764,96 @@ struct GeneralSettingsView: View {
         }
     }
 
-    // MARK: Writing Style
+    // MARK: App Profiles
 
-    private var writingStyleSection: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            formalityRow("Email", context: .email)
-            formalityRow("Work chat", context: .workChat)
-            formalityRow("Personal chat", context: .casualChat)
-            formalityRow("Documents", context: .document)
-            formalityRow("Everything else", context: .neutral)
-
-            Text("How Smart Cleanup punctuates and polishes your words in each kind of app. Your wording and meaning are never changed; code and terminal apps always stay technical.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-        }
-    }
-
-    private func formalityRow(_ label: String, context: AppWritingContext) -> some View {
-        HStack(spacing: 8) {
-            Text(label)
-                .font(.caption)
-            Spacer()
-            Picker("", selection: Binding(
-                get: { appState.writingFormality(for: context) },
-                set: { appState.setWritingFormality($0, for: context) }
-            )) {
-                ForEach(WritingFormality.allCases, id: \.self) { formality in
-                    Text(formality.title).tag(formality)
+    /// One profile per writing context. Megaphone already detects which app a
+    /// dictation is landing in and sorts it into one of six contexts; this is
+    /// what each of those then applies.
+    ///
+    /// Deliberately formatting and register only — never a voice or style
+    /// instruction. Every switch maps to a deterministic post-step, not to prose
+    /// in the cleanup prompt, because the on-device model follows precise
+    /// instructions unreliably.
+    private var profilesSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Picker("Profile", selection: $editingContext) {
+                ForEach(AppWritingContext.allContexts, id: \.self) { context in
+                    Text(context.profileTitle).tag(context)
                 }
             }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .frame(width: 260)
+            .pickerStyle(.menu)
+            .frame(maxWidth: 260)
+
+            Text(editingContext.exampleApps)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            Divider()
+
+            HStack(spacing: 8) {
+                Text("Register")
+                    .font(.caption)
+                Spacer()
+                Picker("", selection: Binding(
+                    get: { appState.profile(for: editingContext).formality },
+                    set: { appState.setWritingFormality($0, for: editingContext) }
+                )) {
+                    ForEach(WritingFormality.allCases, id: \.self) { formality in
+                        Text(formality.title).tag(formality)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .frame(width: 260)
+                .disabled(editingContext == .codeOrTerminal)
+                .opacity(editingContext == .codeOrTerminal ? 0.5 : 1)
+            }
+
+            Text(editingContext == .codeOrTerminal
+                 ? "Code and terminal apps are exempt from the register dial — commands are never restyled."
+                 : "How Smart Cleanup punctuates and polishes here. Your wording and meaning are never changed.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            Divider()
+
+            profileToggle("Add missing question marks", \.questionMarks)
+            profileToggle("Continue sentences in lower case", \.lowercaseContinuations)
+            profileToggle("Fewer commas", \.lightCommas)
+            profileToggle("Build dictated lists", \.lists)
+            profileToggle("Resolve spoken restarts", \.restarts)
+            profileToggle("Learn words from your edits", \.learnEdits)
+
+            Text("Question marks are only added to wording that is plainly a question. A dictation landing mid-sentence gets its first word lower-cased, leaving names, acronyms and “I” alone. Fewer commas suits chat (“Okay, bet I will” becomes “Okay bet I will”) and is off elsewhere. Lists turn “bullet point…” or “first… second…” into real lines — worth turning off for a shell without bracketed paste, where each pasted line would run. Restarts drop the clause you abandoned. Edits you make by hand within 25 seconds are read back, and a word you fix twice joins your dictionary.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            Divider()
+
+            HStack {
+                Button("Reset This Profile") {
+                    appState.setProfile(.standard(for: editingContext), for: editingContext)
+                }
+                Spacer()
+                Text("Applies to \(editingContext.profileTitle.lowercased()) only")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
     }
 
-    // MARK: Automatic Fixes
-
-    /// Deterministic post-steps that run after Smart Cleanup. Each one only ever
-    /// touches a single thing, so they are safe to leave on — which is why they
-    /// all default to enabled. Exact mode skips every one of them.
-    private var automaticFixesSection: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Toggle(
-                "Continue sentences in lower case",
-                isOn: $appState.lowercaseSentenceContinuations
-            )
-
-            Toggle("Add missing question marks", isOn: $appState.addQuestionMarks)
-
-            Toggle(
-                "Also in terminals and editors",
-                isOn: $appState.questionMarksInCode
-            )
-            .disabled(!appState.addQuestionMarks)
-            .opacity(appState.addQuestionMarks ? 1 : 0.5)
-            .padding(.leading, 18)
-
-            Text("When the text you dictate into lands mid-sentence, its first word is lower-cased — names, acronyms, “I”, days and months are left alone. Question marks are only added to wording that is plainly a question, never to a statement that was a question by tone.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-
-            Divider()
-
-            Text("Dictated Lists")
-                .font(.caption.weight(.semibold))
-
-            Toggle("In terminals and editors", isOn: $appState.listsInCode)
-            Toggle("In personal chat", isOn: $appState.listsInCasualChat)
-
-            Text("Saying “bullet point” or counting off “first… second… third…” becomes real lines. Already on everywhere else. Turn the terminal one off if you paste into a shell without bracketed paste, where each line would run as its own command.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-
-            Divider()
-
-            Toggle("Fewer commas in personal chat", isOn: $appState.casualChatLightPunctuation)
-            Toggle("Resolve spoken restarts", isOn: $appState.resolveSelfCorrections)
-            Toggle("Learn words from your edits", isOn: $appState.learnFromEditsEnabled)
-
-            Text("“Okay, bet I will” is written “Okay bet I will” in chat apps. A restart drops the clause you abandoned: “let's meet at the office no wait let's do it over Zoom” keeps only the second half. Edits you make by hand within 25 seconds are read back, and a word you fix twice is added to your dictionary.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-        }
+    private func profileToggle(
+        _ label: String,
+        _ keyPath: WritableKeyPath<DictationProfile, Bool>
+    ) -> some View {
+        Toggle(label, isOn: Binding(
+            get: { appState.profile(for: editingContext)[keyPath: keyPath] },
+            set: { newValue in
+                var updated = appState.profile(for: editingContext)
+                updated[keyPath: keyPath] = newValue
+                appState.setProfile(updated, for: editingContext)
+            }
+        ))
     }
 
     // MARK: Hands-Free Dictation
