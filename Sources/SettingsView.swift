@@ -446,6 +446,9 @@ struct GeneralSettingsView: View {
                 SettingsCard("Writing Style", icon: "textformat") {
                     writingStyleSection
                 }
+                SettingsCard("Automatic Fixes", icon: "wand.and.sparkles") {
+                    automaticFixesSection
+                }
                 SettingsCard("Output Language", icon: "globe") {
                     outputLanguageSection
                 }
@@ -454,6 +457,9 @@ struct GeneralSettingsView: View {
                 }
                 SettingsCard("Mouse Dictation", icon: "computermouse.fill") {
                     mouseDictationSection
+                }
+                SettingsCard("Hands-Free Dictation", icon: "hand.tap.fill") {
+                    handsFreeSection
                 }
                 SettingsCard("Ask Megaphone", icon: "sparkles") {
                     wakeCommandSection
@@ -791,6 +797,109 @@ struct GeneralSettingsView: View {
             .pickerStyle(.segmented)
             .labelsHidden()
             .frame(width: 260)
+        }
+    }
+
+    // MARK: Automatic Fixes
+
+    /// Deterministic post-steps that run after Smart Cleanup. Each one only ever
+    /// touches a single thing, so they are safe to leave on — which is why they
+    /// all default to enabled. Exact mode skips every one of them.
+    private var automaticFixesSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Toggle(
+                "Continue sentences in lower case",
+                isOn: $appState.lowercaseSentenceContinuations
+            )
+
+            Toggle("Add missing question marks", isOn: $appState.addQuestionMarks)
+
+            Toggle(
+                "Also in terminals and editors",
+                isOn: $appState.questionMarksInCode
+            )
+            .disabled(!appState.addQuestionMarks)
+            .opacity(appState.addQuestionMarks ? 1 : 0.5)
+            .padding(.leading, 18)
+
+            Text("When the text you dictate into lands mid-sentence, its first word is lower-cased — names, acronyms, “I”, days and months are left alone. Question marks are only added to wording that is plainly a question, never to a statement that was a question by tone.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            Divider()
+
+            Text("Dictated Lists")
+                .font(.caption.weight(.semibold))
+
+            Toggle("In terminals and editors", isOn: $appState.listsInCode)
+            Toggle("In personal chat", isOn: $appState.listsInCasualChat)
+
+            Text("Saying “bullet point” or counting off “first… second… third…” becomes real lines. Already on everywhere else. Turn the terminal one off if you paste into a shell without bracketed paste, where each line would run as its own command.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            Divider()
+
+            Toggle("Fewer commas in personal chat", isOn: $appState.casualChatLightPunctuation)
+            Toggle("Resolve spoken restarts", isOn: $appState.resolveSelfCorrections)
+            Toggle("Learn words from your edits", isOn: $appState.learnFromEditsEnabled)
+
+            Text("“Okay, bet I will” is written “Okay bet I will” in chat apps. A restart drops the clause you abandoned: “let's meet at the office no wait let's do it over Zoom” keeps only the second half. Edits you make by hand within 25 seconds are read back, and a word you fix twice is added to your dictionary.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    // MARK: Hands-Free Dictation
+
+    private var handsFreeSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Toggle(
+                "Double-tap to keep recording",
+                isOn: $appState.doubleTapHandsFreeEnabled
+            )
+
+            VStack(alignment: .leading, spacing: 12) {
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack {
+                        Text("Longest Tap")
+                            .font(.caption.weight(.semibold))
+                        Spacer()
+                        Text("\(Int((appState.doubleTapMaxHold * 1000).rounded())) ms")
+                            .font(.caption.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                    }
+                    Slider(value: $appState.doubleTapMaxHold, in: 0.1...0.5, step: 0.01)
+                    Text("A press held longer than this is a normal push-to-talk hold, not a tap. This is also the only delay double-tap adds to stopping.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack {
+                        Text("Gap Between Taps")
+                            .font(.caption.weight(.semibold))
+                        Spacer()
+                        Text("\(Int((appState.doubleTapGap * 1000).rounded())) ms")
+                            .font(.caption.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                    }
+                    Slider(value: $appState.doubleTapGap, in: 0.2...0.8, step: 0.05)
+                    Text("How long after releasing the first tap the second one still counts.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                Divider()
+
+                soundPickerRow("Lock sound", selection: $appState.handsFreeSoundName)
+            }
+            .disabled(!appState.doubleTapHandsFreeEnabled)
+            .opacity(appState.doubleTapHandsFreeEnabled ? 1 : 0.5)
+
+            Text("Tap your dictation shortcut twice to start recording and leave it running, so you can talk without holding anything. Tap once more to stop. The lock sound plays on the second tap that latches it.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
     }
 
