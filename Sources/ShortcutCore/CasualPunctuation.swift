@@ -67,9 +67,19 @@ enum CasualPunctuation {
 
     /// A short chat line reads better without its clause/interjection commas
     /// ("no worries man, all good", "yeah man, for sure, let's link up"). Strips
-    /// every non-numeric comma, except in an actual list — a coordinating
-    /// "and"/"or"/"nor" with two or more commas ("milk, eggs, and bread"), which
-    /// keeps its commas. Number commas ("1,000") are always kept.
+    /// every non-numeric comma, except in an actual list, which keeps its commas.
+    /// Number commas ("1,000") are always kept.
+    ///
+    /// Two signals mark a real list, both requiring two or more commas:
+    ///   - a coordinating "and"/"or"/"nor" — "milk, eggs, and bread"
+    ///   - a colon before the first comma, which introduces an enumeration —
+    ///     "three things: the dictionary, the sounds, the double tap"
+    ///
+    /// The colon signal exists because a dictated list often has no "and", and
+    /// without it every comma was stripped: that exact sentence came out as
+    /// "Three things: the dictionary the sounds the double tap". A colon cannot
+    /// reintroduce the stacked-discourse case it has to stay away from, because
+    /// those never contain one.
     static func stripShortMessageCommas(_ text: String) -> String {
         let wordCount = text.split { $0 == " " || $0.isNewline }.count
         guard wordCount <= maxShortMessageWords else { return text }
@@ -85,6 +95,16 @@ enum CasualPunctuation {
         if matches.count >= 2,
            text.range(of: #"\b(and|or|nor)\b"#, options: [.regularExpression, .caseInsensitive]) != nil {
             return text
+        }
+
+        // Or a colon that introduces the enumeration. It must come before the
+        // first comma to be a lead-in; a colon later in the line is doing
+        // something else and does not protect the commas ahead of it.
+        if matches.count >= 2 {
+            let colon = ns.range(of: ":")
+            if colon.location != NSNotFound, colon.location < matches[0].range.location {
+                return text
+            }
         }
 
         let mutable = NSMutableString(string: text)

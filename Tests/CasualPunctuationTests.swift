@@ -12,6 +12,7 @@ enum CasualPunctuationTests {
         testKeepsNumberCommas()
         testKeepsListCommas()
         testStackedInterjectionCommas()
+        testColonIntroducedListKeepsCommas()
         testLeavesLongSentenceCommaAlone()
         testDoesNotMatchOpenerAsPrefixOfAnotherWord()
         testEmptyAndNoComma()
@@ -104,6 +105,33 @@ enum CasualPunctuationTests {
             CasualPunctuation.lighten("Sorry, I grabbed eggs, milk and bread"),
             "Sorry, I grabbed eggs, milk and bread"
         )
+    }
+
+    /// A colon lead-in marks an enumeration, so its commas survive even with no
+    /// coordinating "and". Regression: this exact line lost every comma.
+    private static func testColonIntroducedListKeepsCommas() {
+        expect(
+            CasualPunctuation.lighten("Three things: the dictionary, the sounds, the double tap"),
+            "Three things: the dictionary, the sounds, the double tap"
+        )
+        expect(
+            CasualPunctuation.lighten("today: gym, groceries, laundry"),
+            "today: gym, groceries, laundry"
+        )
+        // One comma is still a stray clause comma, colon or not.
+        expect(CasualPunctuation.lighten("okay: all good, thanks"), "okay: all good thanks")
+        // The colon has to precede the first comma to be a lead-in.
+        expect(
+            CasualPunctuation.lighten("dictionary, sounds, double tap: done"),
+            "dictionary sounds double tap: done"
+        )
+        // And it must not resurrect the stacked-discourse case, which has none.
+        expect(
+            CasualPunctuation.lighten("yeah man, for sure, let's link up"),
+            "yeah man for sure let's link up"
+        )
+        expect(CasualPunctuation.lighten("no worries man, all good"), "no worries man all good")
+        expect(CasualPunctuation.lighten("Okay, bet I will"), "Okay bet I will")
     }
 
     private static func testEmptyAndNoComma() {
