@@ -195,7 +195,12 @@ enum AppWritingContext: String, Equatable, Sendable {
         case .codeOrTerminal:
             base = "Preserve commands, code, flags, paths, identifiers, line breaks, and technical formatting exactly when clear."
         case .neutral:
-            base = "Use neutral, readable punctuation and preserve the speaker's tone."
+            // Structure has to be permitted here, not just in `.document`.
+            // Most web text areas classify as neutral, and without this the
+            // per-request ordinal hint alone scored 0/4 on an implicit
+            // enumeration ("three things, first… second… third…") while the
+            // same hint scored 4/4 in `.document`. With it: 4/4 in both.
+            base = "Use neutral, readable punctuation and preserve the speaker's tone. Structure is welcome here: when the speaker clearly itemizes steps or tasks, format them as a list with one item per line."
         }
         var guidance = base
         if markdown {
@@ -803,6 +808,42 @@ actor AppleFoundationModelsPostProcessor {
         }
         if !request.customInstructions.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             hints.append("Additional cleanup preference: \(request.customInstructions.prefix(800))")
+        }
+        // The session instructions carry worked examples, and the model
+        // sometimes emits one of them verbatim instead of the transcript —
+        // which then trips the "dropped most of the transcript" guard below and
+        // silently falls back to deterministic cleanup. Measured on
+        // "twenty eight thousand no sorry twenty two thousand": 0/8 accepted
+        // without this line, 8/8 with it, and no regression on the other cases.
+        //
+        // Both details below are load-bearing and were measured, not reasoned:
+        //   * It must be a per-request hint. The same sentence added to
+        //     `dictationInstructions` changed nothing (0/8).
+        //   * This exact phrasing. A reworded version carrying the same meaning
+        //     ("The examples in your instructions are illustrations, not source
+        //     material…") also scored 0/8.
+        // Reword it and you are re-opening the bug, so re-measure if you do.
+        hints.append(
+            "Never reuse wording from the examples in these instructions; "
+            + "only ever rewrite the speaker's own words."
+        )
+        // Spoken markers ("bullet point", "numbered list", "new line") already
+        // produce real list lines. An *implicit* enumeration does not: measured
+        // 0/4 in both document and general-writing contexts, 4/4 with this
+        // stated here, and no regression on the marker cases or on prose that
+        // merely contains "first"/"second".
+        //
+        // Excluded where a line break does harm, both measured:
+        //   * codeOrTerminal — "first run git pull then second run make test"
+        //     became three lines, and pasting those into a shell runs each one.
+        //   * casualChat — its own guidance forbids bullets; kept out so the two
+        //     instructions never contradict each other.
+        if writingContext != .codeOrTerminal, writingContext != .casualChat {
+            hints.append(
+                "When the speaker lists items using ordinal words (first, second, third), "
+                + "write one item per line and remove the ordinal words. Keep any "
+                + "introductory clause on its own line above the list."
+            )
         }
         let hintText = hints.isEmpty ? "" : hints.joined(separator: "\n") + "\n\n"
         return """
