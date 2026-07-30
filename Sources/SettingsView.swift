@@ -822,9 +822,10 @@ struct GeneralSettingsView: View {
             profileToggle("Fewer commas", \.lightCommas)
             profileToggle("Build dictated lists", \.lists)
             profileToggle("Resolve spoken restarts", \.restarts)
+            profileToggle("Spoken emoji names", \.emoji)
             profileToggle("Learn words from your edits", \.learnEdits)
 
-            Text("Question marks are only added to wording that is plainly a question. A dictation landing mid-sentence gets its first word lower-cased, leaving names, acronyms and “I” alone. Fewer commas suits chat (“Okay, bet I will” becomes “Okay bet I will”) and is off elsewhere. Lists turn “bullet point…” or “first… second…” into real lines — worth turning off for a shell without bracketed paste, where each pasted line would run. Restarts drop the clause you abandoned. Edits you make by hand within 25 seconds are read back, and a word you fix twice joins your dictionary.")
+            Text("Question marks are only added to wording that is plainly a question. A dictation landing mid-sentence gets its first word lower-cased, leaving names, acronyms and “I” alone. Fewer commas suits chat (“Okay, bet I will” becomes “Okay bet I will”) and is off elsewhere. Lists turn “bullet point…” or “first… second…” into real lines — worth turning off for a shell without bracketed paste, where each pasted line would run. Restarts drop the clause you abandoned. Spoken emoji names turn “laughing face emoji” into 😂 — you have to say “emoji” out loud, so it never fires on its own. Edits you make by hand within 25 seconds are read back, and a word you fix twice joins your dictionary.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
 

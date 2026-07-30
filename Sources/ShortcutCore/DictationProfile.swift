@@ -26,6 +26,9 @@ struct DictationProfile: Codable, Equatable, Sendable {
     var lowercaseContinuations: Bool
     /// Learn vocabulary from edits made by hand after a dictation.
     var learnEdits: Bool
+    /// Turn a spoken description into the emoji it names, e.g. "laughing face
+    /// emoji". Needs the word "emoji" out loud, so it never fires by accident.
+    var emoji: Bool
 
     init(
         formality: WritingFormality = .balanced,
@@ -34,7 +37,8 @@ struct DictationProfile: Codable, Equatable, Sendable {
         lists: Bool = true,
         restarts: Bool = true,
         lowercaseContinuations: Bool = true,
-        learnEdits: Bool = true
+        learnEdits: Bool = true,
+        emoji: Bool = true
     ) {
         self.formality = formality
         self.lightCommas = lightCommas
@@ -43,6 +47,7 @@ struct DictationProfile: Codable, Equatable, Sendable {
         self.restarts = restarts
         self.lowercaseContinuations = lowercaseContinuations
         self.learnEdits = learnEdits
+        self.emoji = emoji
     }
 
     /// Decoding tolerates a profile written by an older build that lacked a
@@ -58,6 +63,7 @@ struct DictationProfile: Codable, Equatable, Sendable {
         lowercaseContinuations = try c.decodeIfPresent(Bool.self, forKey: .lowercaseContinuations)
             ?? fallback.lowercaseContinuations
         learnEdits = try c.decodeIfPresent(Bool.self, forKey: .learnEdits) ?? fallback.learnEdits
+        emoji = try c.decodeIfPresent(Bool.self, forKey: .emoji) ?? fallback.emoji
     }
 
     /// The shipped profile for a context, used for a fresh install and as the

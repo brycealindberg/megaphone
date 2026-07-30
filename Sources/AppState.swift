@@ -3158,15 +3158,28 @@ final class AppState: ObservableObject, @unchecked Sendable {
         // Code and terminal apps stay exempt from the register dial.
         let formality = writingContext == .codeOrTerminal ? .balanced : profile.formality
         // Deterministic finishing touches on the cleaned text, in order:
+        //   - laughter written apart is joined back up ("ha ha" -> "haha")
+        //   - a spoken emoji description becomes the emoji
         //   - casual chat gets fewer commas ("Okay, bet I will" -> "Okay bet I
         //     will"); comma-only, so it can never drop a "?" or a capital
         //   - an obvious question the model left flat gets a "?"
-        // Both are add/remove-only on a single punctuation class, which is why
-        // they are code and not cleanup-prompt lines (every prompt wording that
+        // Each is add/remove-only on a single token class, which is why they
+        // are code and not cleanup-prompt lines (every prompt wording that
         // touched these also broke them). Exact mode returns before this runs,
         // so verbatim output is never finished.
         func finishText(_ text: String) -> String {
             var t = text
+            // First, so the comma pass below sees laughter already joined:
+            // Smart Cleanup writes "Ha, ha, that's wild", which has to become
+            // "Haha, that's wild" before the leading-opener comma is stripped.
+            // Unconditional — it can only ever join two "ha" tokens, and there
+            // is no destination app where laughter should stay apart.
+            t = LaughterSpelling.collapse(t)
+            // Needs the spoken word "emoji", so it is inert on ordinary
+            // dictation and only ever fires because the speaker asked.
+            if profile.emoji {
+                t = SpokenEmoji.substitute(t)
+            }
             if profile.lightCommas {
                 t = CasualPunctuation.lighten(t)
             }
@@ -3306,9 +3319,22 @@ final class AppState: ObservableObject, @unchecked Sendable {
         // the text the speaker actually settled on. Only touches genuine
         // parallel restarts; value swaps pass through for the model to handle.
         // Never applied to Exact, which is verbatim by definition.
-        let cleanupInput = profile.restarts
+        var cleanupInput = profile.restarts
             ? SelfCorrectionResolver.resolve(trimmedRawTranscript)
             : trimmedRawTranscript
+        // Laughter and spoken emoji names are settled *before* cleanup, not just
+        // after. Measured: the model reads a leading "ha ha" as a hesitation
+        // filler and a trailing "crying face emoji" as abandoned wording, and
+        // deletes both — "ha ha that's amazing" came back as "That's amazing",
+        // "my flight got cancelled crying face emoji" as "My flight got
+        // cancelled." A post-step cannot rescue text that is already gone.
+        // Handing the model "haha" and "😢" instead gives it ordinary content it
+        // has no reason to drop. Both passes are idempotent, so finishText still
+        // runs them on the way out for the Basic and fallback paths.
+        cleanupInput = LaughterSpelling.collapse(cleanupInput)
+        if profile.emoji {
+            cleanupInput = SpokenEmoji.substitute(cleanupInput)
+        }
 
         let deterministic = TranscriptTidier.tidy(cleanupInput, corrections: corrections)
         let safeFallback = deterministic.isEmpty ? trimmedRawTranscript : deterministic
