@@ -40,11 +40,18 @@ case "${1:-}" in
 esac
 
 # ---------------------------------------------------------------- signing config
+# The environment wins over the file. Sourcing plain assignments would otherwise
+# clobber an explicit override — which silently defeated a test of the signature
+# gate below, since `CODESIGN_IDENTITY=… script` was ignored.
+_env_app_name="${APP_NAME:-}"
+_env_bundle_id="${BUNDLE_ID:-}"
+_env_identity="${CODESIGN_IDENTITY:-}"
+_env_install_path="${INSTALL_PATH:-}"
 [ -f .build-config ] && . ./.build-config
-APP_NAME="${APP_NAME:-Megaphone}"
-BUNDLE_ID="${BUNDLE_ID:-com.kuberwastaken.megaphone}"
-CODESIGN_IDENTITY="${CODESIGN_IDENTITY:-}"
-INSTALL_PATH="${INSTALL_PATH:-/Applications/$APP_NAME.app}"
+APP_NAME="${_env_app_name:-${APP_NAME:-Megaphone}}"
+BUNDLE_ID="${_env_bundle_id:-${BUNDLE_ID:-com.kuberwastaken.megaphone}}"
+CODESIGN_IDENTITY="${_env_identity:-${CODESIGN_IDENTITY:-}}"
+INSTALL_PATH="${_env_install_path:-${INSTALL_PATH:-/Applications/$APP_NAME.app}}"
 
 # ---------------------------------------------------------------- 1. report state
 bold "1. State"
