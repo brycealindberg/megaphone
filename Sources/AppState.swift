@@ -239,6 +239,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
     private let doubleTapHandsFreeEnabledStorageKey = "double_tap_hands_free_enabled"
     private let learnFromEditsEnabledStorageKey = "learn_from_edits_enabled"
     private let casualChatLightPunctuationStorageKey = "casual_chat_light_punctuation"
+    private let resolveSelfCorrectionsStorageKey = "self_correction_restart_enabled"
     private let doubleTapMaxHoldStorageKey = "double_tap_max_hold"
     private let doubleTapGapStorageKey = "double_tap_gap"
     private static let doubleTapMaxHoldDefault: TimeInterval = 0.25
@@ -529,6 +530,14 @@ final class AppState: ObservableObject, @unchecked Sendable {
                 casualChatLightPunctuation,
                 forKey: casualChatLightPunctuationStorageKey
             )
+        }
+    }
+
+    /// Resolve a spoken mid-utterance restart ("...no wait, let's do it over
+    /// Zoom") by dropping the abandoned clause. See SelfCorrectionResolver.
+    @Published var resolveSelfCorrections: Bool {
+        didSet {
+            UserDefaults.standard.set(resolveSelfCorrections, forKey: resolveSelfCorrectionsStorageKey)
         }
     }
 
@@ -823,6 +832,9 @@ final class AppState: ObservableObject, @unchecked Sendable {
         let casualChatLightPunctuation = UserDefaults.standard.object(
             forKey: casualChatLightPunctuationStorageKey
         ) == nil ? true : UserDefaults.standard.bool(forKey: casualChatLightPunctuationStorageKey)
+        let resolveSelfCorrections = UserDefaults.standard.object(
+            forKey: resolveSelfCorrectionsStorageKey
+        ) == nil ? true : UserDefaults.standard.bool(forKey: resolveSelfCorrectionsStorageKey)
         // A zero-or-missing stored value means "never set" — fall back to the
         // default rather than a 0s window, which would disable the gesture.
         let storedMaxHold = UserDefaults.standard.double(forKey: doubleTapMaxHoldStorageKey)
@@ -941,6 +953,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
         self.doubleTapHandsFreeEnabled = doubleTapHandsFreeEnabled
         self.learnFromEditsEnabled = learnFromEditsEnabled
         self.casualChatLightPunctuation = casualChatLightPunctuation
+        self.resolveSelfCorrections = resolveSelfCorrections
         self.doubleTapMaxHold = doubleTapMaxHold
         self.doubleTapGap = doubleTapGap
         // didSet does not fire during init, so seed the machine directly.
@@ -1318,7 +1331,8 @@ final class AppState: ObservableObject, @unchecked Sendable {
                     cleanupMode: self.smartCleanupMode,
                     wakeCommandsEnabled: self.wakeCommandsEnabled,
                     plainMegaphoneWakeWordEnabled: self.plainMegaphoneWakeWordEnabled,
-                    casualChatLightPunctuation: self.casualChatLightPunctuation
+                    casualChatLightPunctuation: self.casualChatLightPunctuation,
+                    resolveSelfCorrections: self.resolveSelfCorrections
                 )
                 finalTranscript = result.finalTranscript
                 processingStatus = Self.statusMessage(
@@ -2991,6 +3005,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
         wakeCommandsEnabled: Bool,
         plainMegaphoneWakeWordEnabled: Bool,
         casualChatLightPunctuation: Bool = true,
+        resolveSelfCorrections: Bool = true,
         previousText: String? = nil,
         smartSessionID: UUID? = nil
     ) async -> (
@@ -3140,7 +3155,16 @@ final class AppState: ObservableObject, @unchecked Sendable {
             return (trimmedRawTranscript, .preservedExactWording, "", nil)
         }
 
-        let deterministic = TranscriptTidier.tidy(trimmedRawTranscript, corrections: corrections)
+        // Resolve a mid-utterance restart ("...no wait, let's do it over Zoom")
+        // before cleanup, so the model and the deterministic tidier both work on
+        // the text the speaker actually settled on. Only touches genuine
+        // parallel restarts; value swaps pass through for the model to handle.
+        // Never applied to Exact, which is verbatim by definition.
+        let cleanupInput = resolveSelfCorrections
+            ? SelfCorrectionResolver.resolve(trimmedRawTranscript)
+            : trimmedRawTranscript
+
+        let deterministic = TranscriptTidier.tidy(cleanupInput, corrections: corrections)
         let safeFallback = deterministic.isEmpty ? trimmedRawTranscript : deterministic
         if cleanupMode == .basic {
             return (lightenIfCasualChat(safeFallback), .deterministicCleanup, "", nil)
@@ -3148,7 +3172,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
 
         do {
             let request = SmartCleanupRequest(
-                transcript: trimmedRawTranscript,
+                transcript: cleanupInput,
                 appName: context.appName,
                 bundleIdentifier: context.bundleIdentifier,
                 windowTitle: context.windowTitle,
@@ -3365,6 +3389,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
                         wakeCommandsEnabled: self.wakeCommandsEnabled,
                         plainMegaphoneWakeWordEnabled: self.plainMegaphoneWakeWordEnabled,
                         casualChatLightPunctuation: self.casualChatLightPunctuation,
+                        resolveSelfCorrections: self.resolveSelfCorrections,
                         previousText: previousText,
                         smartSessionID: cleanupSessionID
                     )
