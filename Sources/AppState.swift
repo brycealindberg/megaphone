@@ -240,6 +240,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
     private let learnFromEditsEnabledStorageKey = "learn_from_edits_enabled"
     private let casualChatLightPunctuationStorageKey = "casual_chat_light_punctuation"
     private let resolveSelfCorrectionsStorageKey = "self_correction_restart_enabled"
+    private let addQuestionMarksStorageKey = "add_question_marks"
     private let doubleTapMaxHoldStorageKey = "double_tap_max_hold"
     private let doubleTapGapStorageKey = "double_tap_gap"
     private static let doubleTapMaxHoldDefault: TimeInterval = 0.25
@@ -541,6 +542,14 @@ final class AppState: ObservableObject, @unchecked Sendable {
         }
     }
 
+    /// Add a question mark to an obvious question the cleanup model left flat
+    /// ("can you send that over" -> "…over?"). See QuestionMark.
+    @Published var addQuestionMarks: Bool {
+        didSet {
+            UserDefaults.standard.set(addQuestionMarks, forKey: addQuestionMarksStorageKey)
+        }
+    }
+
     /// A completed hold shorter than this counts as a tap. Bounds the worst-case
     /// latency the gesture can add to a very short push-to-talk.
     @Published var doubleTapMaxHold: TimeInterval {
@@ -835,6 +844,9 @@ final class AppState: ObservableObject, @unchecked Sendable {
         let resolveSelfCorrections = UserDefaults.standard.object(
             forKey: resolveSelfCorrectionsStorageKey
         ) == nil ? true : UserDefaults.standard.bool(forKey: resolveSelfCorrectionsStorageKey)
+        let addQuestionMarks = UserDefaults.standard.object(
+            forKey: addQuestionMarksStorageKey
+        ) == nil ? true : UserDefaults.standard.bool(forKey: addQuestionMarksStorageKey)
         // A zero-or-missing stored value means "never set" — fall back to the
         // default rather than a 0s window, which would disable the gesture.
         let storedMaxHold = UserDefaults.standard.double(forKey: doubleTapMaxHoldStorageKey)
@@ -954,6 +966,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
         self.learnFromEditsEnabled = learnFromEditsEnabled
         self.casualChatLightPunctuation = casualChatLightPunctuation
         self.resolveSelfCorrections = resolveSelfCorrections
+        self.addQuestionMarks = addQuestionMarks
         self.doubleTapMaxHold = doubleTapMaxHold
         self.doubleTapGap = doubleTapGap
         // didSet does not fire during init, so seed the machine directly.
@@ -1332,7 +1345,8 @@ final class AppState: ObservableObject, @unchecked Sendable {
                     wakeCommandsEnabled: self.wakeCommandsEnabled,
                     plainMegaphoneWakeWordEnabled: self.plainMegaphoneWakeWordEnabled,
                     casualChatLightPunctuation: self.casualChatLightPunctuation,
-                    resolveSelfCorrections: self.resolveSelfCorrections
+                    resolveSelfCorrections: self.resolveSelfCorrections,
+                    addQuestionMarks: self.addQuestionMarks
                 )
                 finalTranscript = result.finalTranscript
                 processingStatus = Self.statusMessage(
@@ -3006,6 +3020,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
         plainMegaphoneWakeWordEnabled: Bool,
         casualChatLightPunctuation: Bool = true,
         resolveSelfCorrections: Bool = true,
+        addQuestionMarks: Bool = true,
         previousText: String? = nil,
         smartSessionID: UUID? = nil
     ) async -> (
@@ -3034,13 +3049,24 @@ final class AppState: ObservableObject, @unchecked Sendable {
             windowTitle: context.windowTitle
         )
         let formality = writingFormality(for: writingContext)
-        // Casual chat gets fewer commas: "Okay, bet I will" -> "Okay bet I
-        // will". Deterministic and comma-only, so it can never drop a question
-        // mark or a capital the way every cleanup-prompt wording did. Never
-        // applied to Exact mode, which is verbatim by definition.
-        func lightenIfCasualChat(_ text: String) -> String {
-            guard casualChatLightPunctuation, writingContext == .casualChat else { return text }
-            return CasualPunctuation.lighten(text)
+        // Deterministic finishing touches on the cleaned text, in order:
+        //   - casual chat gets fewer commas ("Okay, bet I will" -> "Okay bet I
+        //     will"); comma-only, so it can never drop a "?" or a capital
+        //   - an obvious question the model left flat gets a "?"
+        // Both are add/remove-only on a single punctuation class, which is why
+        // they are code and not cleanup-prompt lines (every prompt wording that
+        // touched these also broke them). Exact mode returns before this runs,
+        // so verbatim output is never finished.
+        func finishText(_ text: String) -> String {
+            var t = text
+            if casualChatLightPunctuation, writingContext == .casualChat {
+                t = CasualPunctuation.lighten(t)
+            }
+            // Not in code/terminal — a shell command is not a question.
+            if addQuestionMarks, writingContext != .codeOrTerminal {
+                t = QuestionMark.punctuate(t)
+            }
+            return t
         }
 
         if wakeCommandsEnabled, case .dictation = intent, let wake = WakePhraseMatcher.detect(
@@ -3167,7 +3193,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
         let deterministic = TranscriptTidier.tidy(cleanupInput, corrections: corrections)
         let safeFallback = deterministic.isEmpty ? trimmedRawTranscript : deterministic
         if cleanupMode == .basic {
-            return (lightenIfCasualChat(safeFallback), .deterministicCleanup, "", nil)
+            return (finishText(safeFallback), .deterministicCleanup, "", nil)
         }
 
         do {
@@ -3200,10 +3226,10 @@ final class AppState: ObservableObject, @unchecked Sendable {
             // the model already substituted, the spoken form is gone and this
             // matches nothing.
             let corrected = TranscriptTidier.apply(corrections: corrections, to: result.text)
-            return (lightenIfCasualChat(corrected), .smartCleanupSucceeded(elapsed: result.elapsed), result.prompt, nil)
+            return (finishText(corrected), .smartCleanupSucceeded(elapsed: result.elapsed), result.prompt, nil)
         } catch {
             os_log(.error, log: recordingLog, "On-device smart cleanup failed: %{public}@", error.localizedDescription)
-            return (lightenIfCasualChat(safeFallback), .smartCleanupFallback(reason: error.localizedDescription), "", nil)
+            return (finishText(safeFallback), .smartCleanupFallback(reason: error.localizedDescription), "", nil)
         }
     }
 
@@ -3390,6 +3416,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
                         plainMegaphoneWakeWordEnabled: self.plainMegaphoneWakeWordEnabled,
                         casualChatLightPunctuation: self.casualChatLightPunctuation,
                         resolveSelfCorrections: self.resolveSelfCorrections,
+                        addQuestionMarks: self.addQuestionMarks,
                         previousText: previousText,
                         smartSessionID: cleanupSessionID
                     )

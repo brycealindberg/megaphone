@@ -32,6 +32,7 @@ struct AppContextServiceTests {
         DictationEditLearnerTests.run()
         CasualPunctuationTests.run()
         SelfCorrectionResolverTests.run()
+        QuestionMarkTests.run()
         SmartCleanupValidationTests.run()
         StructuredOutputUnwrapTests.run()
         print("MegaphoneTests passed")
