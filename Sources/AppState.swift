@@ -3197,6 +3197,17 @@ final class AppState: ObservableObject, @unchecked Sendable {
             if profile.emoji {
                 t = SpokenEmoji.substitute(t)
             }
+            // Repair a name against what is on screen. Deterministic because
+            // neither of the two obvious routes works on this OS: contextual
+            // strings do not reach the recogniser, and telling the cleanup
+            // model the correct spelling does not make it apply one.
+            if !screenVocabularyTerms.isEmpty {
+                t = SpokenNameRepair.apply(
+                    t,
+                    names: screenVocabularyTerms,
+                    protected: SpeechAnalyzerService.splitVocabulary(speechRecognitionVocabulary)
+                )
+            }
             if profile.lightCommas {
                 t = CasualPunctuation.lighten(t)
             }
@@ -3348,6 +3359,17 @@ final class AppState: ObservableObject, @unchecked Sendable {
         // Handing the model "haha" and "😢" instead gives it ordinary content it
         // has no reason to drop. Both passes are idempotent, so finishText still
         // runs them on the way out for the Basic and fallback paths.
+        // The same argument applies to a misheard name: measured, the model
+        // deletes the word it cannot place ("Dana a Conquo" came back as
+        // "Dana, please add me to the call"), so the spelling has to be right
+        // before it ever sees it.
+        if !screenVocabularyTerms.isEmpty {
+            cleanupInput = SpokenNameRepair.apply(
+                cleanupInput,
+                names: screenVocabularyTerms,
+                protected: SpeechAnalyzerService.splitVocabulary(speechRecognitionVocabulary)
+            )
+        }
         cleanupInput = LaughterSpelling.collapse(cleanupInput)
         if profile.emoji {
             cleanupInput = SpokenEmoji.substitute(cleanupInput)
@@ -3377,8 +3399,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
                     .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
                     .joined(separator: "\n"),
                 formality: formality,
-                allowStructure: profile.lists,
-                screenNames: screenVocabularyTerms
+                allowStructure: profile.lists
             )
             let result = try await AppleFoundationModelsPostProcessor.shared.cleanup(
                 request,

@@ -150,8 +150,13 @@ enum ScreenVocabulary {
         return false
     }
 
+    /// A tool name carries more letters than digits ("n8n", "m4a"). A terminal
+    /// is full of the opposite — "430k", "36h", "ttys023" — and none of those
+    /// is ever a word anyone says.
     private static func mixesLettersAndDigits(_ word: String) -> Bool {
-        word.contains(where: \.isLetter) && word.contains(where: \.isNumber)
+        let letters = word.count(where: \.isLetter)
+        let digits = word.count(where: \.isNumber)
+        return letters >= 2 && digits >= 1 && letters >= digits
     }
 
     // MARK: Filtering

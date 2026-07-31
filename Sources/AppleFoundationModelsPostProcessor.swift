@@ -46,10 +46,6 @@ struct SmartCleanupRequest: Sendable {
     /// anywhere — a terminal without bracketed paste would run each pasted line,
     /// and casual chat needs its bullet ban lifted before lists work at all.
     var allowStructure: Bool = false
-    /// Proper nouns read off the frontmost window for this dictation. Kept
-    /// apart from `vocabulary` on purpose: that list is truncated to 40 in the
-    /// prompt, so merging these would silently evict the user's own terms.
-    var screenNames: [String] = []
 
     init(
         transcript: String,
@@ -64,10 +60,8 @@ struct SmartCleanupRequest: Sendable {
         outputLanguage: String,
         customInstructions: String,
         formality: WritingFormality = .balanced,
-        allowStructure: Bool = false,
-        screenNames: [String] = []
+        allowStructure: Bool = false
     ) {
-        self.screenNames = screenNames
         self.transcript = transcript
         self.appName = appName
         self.bundleIdentifier = bundleIdentifier
@@ -836,15 +830,11 @@ actor AppleFoundationModelsPostProcessor {
         if !request.vocabulary.isEmpty {
             hints.append("Preferred spellings: " + request.vocabulary.prefix(40).joined(separator: ", "))
         }
-        if !request.screenNames.isEmpty {
-            // Spellings only. The model must not treat what is on screen as
-            // something to answer, summarize, or write about.
-            hints.append(
-                "Names visible on screen (use these spellings if the speaker said one; "
-                + "never add them to the text otherwise): "
-                + request.screenNames.prefix(24).joined(separator: ", ")
-            )
-        }
+        // Screen names are deliberately NOT sent to the model. Measured 0/9:
+        // it never applied a supplied spelling, and on one case it deleted the
+        // word it could not place instead ("Dana a Conquo" -> "Dana, please add
+        // me to the call"). `SpokenNameRepair` fixes the spelling before the
+        // transcript ever reaches this prompt.
         if !request.corrections.isEmpty {
             let mappings = request.corrections.prefix(40).map { "\($0.heard) -> \($0.written)" }
             hints.append("Required heard-to-written corrections: " + mappings.joined(separator: "; "))

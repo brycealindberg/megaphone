@@ -113,6 +113,16 @@ enum SpeechAnalyzerService {
     /// Splits Megaphone's free-form vocabulary text into individual terms and
     /// wraps them in an `AnalysisContext` so the on-device model is biased
     /// toward the user's names and jargon.
+    /// Measured 2026-07-31 on macOS 26.5: **this has no observable effect.**
+    /// `setContext` succeeds and `analyzer.context` reads the terms back, but
+    /// the transcript is byte-identical with or without them — on the batch and
+    /// the streaming path alike, and with a term supplied twenty times over.
+    /// "Marek" still comes back "Merrick".
+    ///
+    /// It is left in place because it is free and correct per the documented
+    /// API, so it starts working the day Apple wires it up. Nothing may *depend*
+    /// on it: a spelling that has to be right is fixed deterministically by
+    /// `SpokenNameRepair` and `word_corrections` instead.
     static func vocabularyContext(
         from rawVocabulary: String,
         additionalTerms: [String] = []
