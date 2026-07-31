@@ -16,38 +16,39 @@ enum DictationQuality {
         let totalWords: Int
     }
 
+    private static func isWord(_ token: String) -> Bool {
+        token.contains { $0.isLetter || $0.isNumber }
+    }
+
+    private static func normalizedWord(_ word: String) -> String {
+        word.lowercased().filter { $0.isLetter || $0.isNumber }
+    }
+
     static func score(inserted: String, edited: String) -> Score {
-        let a = words(inserted)
-        let b = words(edited)
+        // Whitespace tokens that carry no letter or digit are punctuation, not
+        // words, and must not dilute the count in either direction.
+        let a = DictationEditLearner.words(in: inserted).filter(isWord)
         guard !a.isEmpty else { return Score(accuracy: 1, changedWords: 0, totalWords: 0) }
-        let distance = wordDistance(a, b)
-        let changed = min(distance, a.count)
+        let b = DictationEditLearner.words(in: edited).filter(isWord)
+        guard !b.isEmpty else { return Score(accuracy: 0, changedWords: a.count, totalWords: a.count) }
+
+        // The field holds far more than this dictation — in a document it is the
+        // whole document. Comparing against all of it scored every real
+        // dictation 0.000, which is what the first live run reported. Reuse the
+        // alignment the edit learner already does for exactly this reason.
+        // Only substantive swaps count. The alignment also surfaces case- and
+        // punctuation-only pairs ("ship" -> "Ship"), which the edit learner
+        // wants but a word-accuracy score does not: this measures whether the
+        // right words were heard, not how they were formatted.
+        let substantive = DictationEditLearner.alignedSubstitutions(a, b).filter { heard, written in
+            normalizedWord(heard) != normalizedWord(written)
+        }
+        let changed = min(substantive.count, a.count)
         return Score(
-            accuracy: max(0, 1 - Double(distance) / Double(a.count)),
+            accuracy: max(0, 1 - Double(changed) / Double(a.count)),
             changedWords: changed,
             totalWords: a.count
         )
     }
 
-    static func words(_ text: String) -> [String] {
-        text.lowercased()
-            .split { !($0.isLetter || $0.isNumber || $0 == "'" || $0 == "\u{2019}") }
-            .map(String.init)
-    }
-
-    private static func wordDistance(_ a: [String], _ b: [String]) -> Int {
-        if a.isEmpty { return b.count }
-        if b.isEmpty { return a.count }
-        var previous = Array(0...b.count)
-        var current = [Int](repeating: 0, count: b.count + 1)
-        for i in 1...a.count {
-            current[0] = i
-            for j in 1...b.count {
-                let cost = a[i - 1] == b[j - 1] ? 0 : 1
-                current[j] = min(previous[j] + 1, current[j - 1] + 1, previous[j - 1] + cost)
-            }
-            swap(&previous, &current)
-        }
-        return previous[b.count]
-    }
 }

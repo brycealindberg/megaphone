@@ -6,6 +6,7 @@ enum DictationQualityTests {
         testOneWrongWordCosts()
         testEmptyAndPunctuationOnly()
         testScoreNeverGoesNegative()
+        testFieldWithSurroundingTextStillScores()
     }
 
     private static func testUntouchedTextScoresPerfect() {
@@ -47,5 +48,31 @@ enum DictationQualityTests {
 
     private static func expect(_ c: Bool, _ m: String, file: StaticString = #file, line: UInt = #line) {
         if !c { fatalError("\(file):\(line): \(m)") }
+    }
+
+    /// The defect the first live run exposed: the field contains the whole
+    /// document, so comparing against all of it scored every real dictation
+    /// 0.000. Only the region the dictation landed in counts.
+    private static func testFieldWithSurroundingTextStillScores() {
+        let doc = """
+        MG-02 verification notes and a paragraph of earlier writing that has
+        nothing to do with the dictation at all.
+
+        Ask Marek Okonkwo whether the LedgerIQ migration finished.
+
+        More trailing text underneath, also unrelated.
+        """
+        let untouched = DictationQuality.score(
+            inserted: "Ask Marek Okonkwo whether the LedgerIQ migration finished.",
+            edited: doc
+        )
+        expect(untouched.accuracy == 1.0, "text present verbatim in a document should score 1.0, got \(untouched.accuracy)")
+
+        let oneFix = DictationQuality.score(
+            inserted: "Ask Merrick Okonkwo whether the LedgerIQ migration finished.",
+            edited: doc
+        )
+        expect(oneFix.accuracy < 1.0, "a real edit should cost something")
+        expect(oneFix.accuracy > 0.5, "one word in eight should not read as total failure, got \(oneFix.accuracy)")
     }
 }
