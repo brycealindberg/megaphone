@@ -3949,26 +3949,32 @@ final class AppState: ObservableObject, @unchecked Sendable {
             localePreference: transcriptionLanguage,
             vocabulary: speechRecognitionVocabulary,
             additionalTerms: { [weak self] in
-                guard wantsScreenVocabulary else { return [] }
+                guard wantsScreenVocabulary else {
+                    os_log(.info, log: recordingLog, "screen vocabulary: disabled")
+                    return []
+                }
                 // Accessibility tree only: reading the screen on every
                 // utterance should not mean screenshotting it on every
                 // utterance. The OCR fallback stays with wake commands.
-                guard let screenText = await ScreenTextService.shared.visibleText(allowingOCR: false) else {
-                    return []
-                }
-                let terms = ScreenVocabulary.terms(from: screenText, excluding: dictionaryTerms)
-                // MG-02 — this closure had never been observed running in the
-                // real app, only in a harness. Log it so the next dictation
-                // proves the chain instead of assuming it.
+                let screenText = await ScreenTextService.shared.visibleText(allowingOCR: false)
+                let terms = screenText.map {
+                    ScreenVocabulary.terms(from: $0, excluding: dictionaryTerms)
+                } ?? []
+                // This closure had never been observed running in the real app,
+                // only in a harness. It logs on EVERY path, including the one
+                // where the window yields no accessibility text — an early
+                // return that logged nothing was indistinguishable from the
+                // whole feature never running, which is exactly the confusion
+                // it was added to remove.
                 os_log(
                     .info,
                     log: recordingLog,
                     "screen vocabulary: %{public}d chars of window text -> %{public}d terms [%{public}@]",
-                    screenText.count, terms.count, terms.prefix(8).joined(separator: ", ")
+                    screenText?.count ?? -1, terms.count, terms.prefix(8).joined(separator: ", ")
                 )
                 await MainActor.run {
                     self?.screenVocabularyTerms = terms
-                    self?.screenTextSnapshot = screenText
+                    self?.screenTextSnapshot = screenText ?? ""
                 }
                 return terms
             }
