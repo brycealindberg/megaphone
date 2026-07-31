@@ -8,6 +8,7 @@ enum ScreenVocabularyTests {
         testDictionaryTermsAreNotDuplicated()
         testUnusualSpellingsAreCaught()
         testAddressesAndPathsAreRejected()
+        testDeveloperNoiseIsRejected()
         testMidSentenceCapitalsAreCaught()
         testRealisticWindowSeparatesNamesFromChrome()
         testScreenRankingPromotesWhatIsVisible()
@@ -67,6 +68,36 @@ enum ScreenVocabularyTests {
         // SHOUTING and Ordinary Capitalisation are not unusual spellings.
         let plain = ScreenVocabulary.terms(from: "PLEASE READ Before Sending")
         expect(!plain.contains("PLEASE"), "all-caps should not qualify, got \(plain)")
+    }
+
+    /// A developer's screen is full of things that look like terms and are
+    /// never spoken. Every string here reached the list before these guards.
+    private static func testDeveloperNoiseIsRejected() {
+        let screen = """
+        real_world_call_volumes_2026-07 5KB
+        5bccfad3-4 claude-501 HH24
+        Whirlpooling… Reco…
+        Running gpt-4o and gpt-4o-mini on Opus
+        """
+        let terms = ScreenVocabulary.terms(from: screen)
+        for junk in ["5bccfad3-4", "claude-501", "HH24", "5KB", "Reco", "real_world_call_volumes_2026-07"] {
+            expect(!terms.contains(junk), "junk \(junk) became a term: \(terms)")
+        }
+        // Genuine model names still survive.
+        expect(terms.contains("gpt-4o"), "expected gpt-4o, got \(terms)")
+
+        // A chat window is mostly timestamps and delivery chrome.
+        let chat = """
+        Marek Vasiliev
+        July28,at11:43 PM
+        Delivered
+        Yeah that works, I will send it over. Meta and Twitter both replied.
+        """
+        let chatTerms = ScreenVocabulary.terms(from: chat)
+        for junk in ["July28", "at11", "July28,at11:43 PM", "Delivered", "Yeah"] {
+            expect(!chatTerms.contains(junk), "chat chrome \(junk) became a term: \(chatTerms)")
+        }
+        expect(chatTerms.contains("Marek Vasiliev"), "the actual name was lost: \(chatTerms)")
     }
 
     private static func testAddressesAndPathsAreRejected() {
@@ -143,6 +174,18 @@ enum ScreenVocabularyTests {
         expect(ScreenVocabulary.rankingForScreen(vocab, screenText: "") == vocab, "empty screen should not reorder")
         // A two-letter term matches too much prose to count as present.
         expect(ScreenVocabulary.rankingForScreen(["ab"], screenText: "grab it")[0] == "ab", "short term should not be promoted")
+
+        // Substring matching promotes the wrong terms and so wastes the slots it
+        // was meant to save. Each of these was a real false promotion.
+        let prose = "Aleksandra reviewed it, Codex handled the migration, we are sowing leads"
+        let decoys = ScreenVocabulary.rankingForScreen(["Aleks", "Code", "SOW", "zzz"], screenText: prose)
+        expect(decoys == ["Aleks", "Code", "SOW", "zzz"], "no term should have been promoted, got \(decoys)")
+
+        // A real whole-word hit still promotes, including a multi-word term.
+        let hits = ScreenVocabulary.rankingForScreen(
+            ["zzz", "Codex", "Claude Code"], screenText: "Codex and Claude Code both ran"
+        )
+        expect(Array(hits.prefix(2)) == ["Codex", "Claude Code"], "whole-word hits should promote, got \(hits)")
     }
 
     private static func testLimitIsRespected() {

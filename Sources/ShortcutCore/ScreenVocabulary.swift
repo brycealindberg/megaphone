@@ -45,6 +45,10 @@ enum ScreenVocabulary {
 
         func offer(_ candidate: String, requireCapital: Bool = true) {
             guard ordered.count < limit else { return }
+            // Checked BEFORE trimming: an ellipsis means the interface cut the
+            // word off, and trimming it would turn "Reco…" into the plausible
+            // looking "Reco". A fragment is never a name.
+            guard !candidate.contains("…"), !candidate.contains("...") else { return }
             let term = candidate.trimmingCharacters(in: .whitespacesAndNewlines)
                 .trimmingCharacters(in: Self.edgePunctuation)
             guard isUsable(term, requireCapital: requireCapital) else { return }
@@ -76,19 +80,41 @@ enum ScreenVocabulary {
     /// ever surface. Relative order is otherwise preserved.
     static func rankingForScreen(_ vocabulary: [String], screenText: String) -> [String] {
         guard !screenText.isEmpty, !vocabulary.isEmpty else { return vocabulary }
-        let haystack = screenText.lowercased()
+        let haystack = Array(screenText.lowercased())
         var onScreen: [String] = []
         var rest: [String] = []
         for term in vocabulary {
             let needle = term.lowercased()
             // Two characters match far too much prose to mean anything.
-            if needle.count >= 3, haystack.contains(needle) {
+            if needle.count >= 3, containsAsWord(Array(needle), in: haystack) {
                 onScreen.append(term)
             } else {
                 rest.append(term)
             }
         }
         return onScreen + rest
+    }
+
+    /// Whole-word containment. A plain substring test promotes the wrong terms
+    /// and so costs the slots it was meant to save: measured on one paragraph of
+    /// ordinary prose it promoted "Aleks" out of "Aleksandra", "SOW" out of
+    /// "sowing" and "Code" out of "Codex" — three of forty slots, from a
+    /// paragraph, against a window that holds 2,400 characters.
+    private static func containsAsWord(_ needle: [Character], in haystack: [Character]) -> Bool {
+        guard !needle.isEmpty, haystack.count >= needle.count else { return false }
+        func isWordCharacter(_ c: Character) -> Bool { c.isLetter || c.isNumber }
+        for start in 0...(haystack.count - needle.count) {
+            if start > 0, isWordCharacter(haystack[start - 1]) { continue }
+            let end = start + needle.count
+            if end < haystack.count, isWordCharacter(haystack[end]) { continue }
+            var matched = true
+            for offset in 0..<needle.count where haystack[start + offset] != needle[offset] {
+                matched = false
+                break
+            }
+            if matched { return true }
+        }
+        return false
     }
 
     // MARK: Sources
@@ -150,6 +176,13 @@ enum ScreenVocabulary {
         for line in text.split(whereSeparator: \.isNewline) {
             var startsSentence = true
             for rawToken in line.split(separator: " ") {
+                // Decided on the raw token: this pass trims the ellipsis off
+                // before `offer` could ever see it, which is how "Reco…" was
+                // reaching the list as the plausible-looking "Reco".
+                if rawToken.contains("…") || rawToken.hasSuffix("...") {
+                    startsSentence = false
+                    continue
+                }
                 let token = String(rawToken).trimmingCharacters(in: edgePunctuation)
                 // A sentence ends where the *untrimmed* token does, so decide
                 // the next token's status before moving on.
@@ -177,22 +210,45 @@ enum ScreenVocabulary {
         return false
     }
 
-    /// A tool name carries more letters than digits ("n8n", "m4a"). A terminal
-    /// is full of the opposite — "430k", "36h", "ttys023" — and none of those
-    /// is ever a word anyone says.
+    /// A tool name carries a digit or two among mostly lowercase letters ("n8n",
+    /// "m4a"). A developer's screen is full of things that pass a naive version
+    /// of this test and are never spoken aloud: measured against a real terminal
+    /// window, "5bccfad3-4", "claude-501", "l_world_call_volumes_20", "HH24" and
+    /// "5KB" all reached the list and crowded out actual names.
     private static func mixesLettersAndDigits(_ word: String) -> Bool {
         let letters = word.count(where: \.isLetter)
         let digits = word.count(where: \.isNumber)
-        return letters >= 2 && digits >= 1 && letters >= digits
+        guard letters >= 2, digits >= 1, letters >= digits else { return false }
+        // An identifier, not a word.
+        guard !word.contains("_") else { return false }
+        // A version, hash or timestamp. Real spoken names carry one digit or two.
+        guard digits <= 2 else { return false }
+        // And never two digits in a row: "gpt-4o", "n8n" and "m4a" all read as
+        // words, while "July28", "at11" and "HH24" are a clock or a build tag.
+        var run = 0
+        for character in word {
+            run = character.isNumber ? run + 1 : 0
+            if run >= 2 { return false }
+        }
+        // Must read like a word: starts with a letter and is not an all-caps code.
+        guard word.first?.isLetter == true, word.contains(where: \.isLowercase) else { return false }
+        return true
     }
 
     // MARK: Filtering
 
-    private static let edgePunctuation = CharacterSet(charactersIn: ".,;:!?\"'’“”()[]{}<>-–—•*_/\\|")
+    private static let edgePunctuation = CharacterSet(charactersIn: ".,;:!?\"'’“”()[]{}<>-–—•*_/\\|…")
 
     private static func isUsable(_ term: String, requireCapital: Bool) -> Bool {
         guard term.count >= minLength, term.count <= maxLength else { return false }
         guard term.contains(where: \.isLetter) else { return false }
+        // Underscores mean an identifier, and a stray ellipsis means the UI
+        // truncated the word — neither is something anyone says.
+        guard !term.contains("_"), !term.contains("…") else { return false }
+        // A colon is a clock or a label, and an internal comma means two things
+        // ran together. Chat transcripts are full of both: a WhatsApp window
+        // was contributing "July28,at11:43 PM" as a term.
+        guard !term.contains(":"), !term.contains(",") else { return false }
         // An address or path is on screen constantly and is never what you said.
         guard !term.contains("@"), !term.contains("/"), !term.contains("\\"),
               !term.lowercased().contains(".com"), !term.lowercased().contains("www.") else {
@@ -232,6 +288,7 @@ enum ScreenVocabulary {
         "add", "remove", "create", "update", "upload", "download", "import", "export",
         "sign", "log", "login", "logout", "account", "profile", "notifications",
         "today", "yesterday", "tomorrow", "now", "online", "offline", "away", "active",
+        "delivered", "seen", "typing", "forwarded", "yeah", "yep", "yes", "nope",
         "untitled", "loading", "error", "warning", "success", "failed", "pending",
         "succeeded", "completed", "finished", "started", "stopped", "saved", "copied",
         "connected", "disconnected", "read", "unread", "enabled", "disabled",

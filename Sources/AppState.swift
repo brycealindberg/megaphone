@@ -3180,6 +3180,9 @@ final class AppState: ObservableObject, @unchecked Sendable {
                 .filter { !$0.isEmpty },
             screenText: screenVocabularyEnabled ? screenTextSnapshot : ""
         )
+        // The window's text has done its one job. Drop it now rather than hold
+        // a copy of whatever was on screen until the next recording starts.
+        screenTextSnapshot = ""
         let corrections = TranscriptTidier.CorrectionMapping.parse(wordCorrections)
         // The writing context for wherever this dictation lands, resolved from
         // the context captured at recording time. Drives both the formality
