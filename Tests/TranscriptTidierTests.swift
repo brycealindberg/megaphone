@@ -2,6 +2,7 @@ import Foundation
 
 enum TranscriptTidierTests {
     static func run() {
+        testCorrectionDoesNotDoubleTheFullStop()
         testFillers()
         testSafeRepeatedWordsAndStutters()
         testMeaningfulSpeechIsPreserved()
@@ -125,5 +126,23 @@ enum TranscriptTidierTests {
         if actual != expected {
             fatalError("\(file):\(line): expected \(String(describing: expected)), got \(String(describing: actual))")
         }
+    }
+
+    /// Measured on the real-voice regression set: "et cetera." -> "etc.." was
+    /// the one case where corrections scored worse than leaving the text alone.
+    private static func testCorrectionDoesNotDoubleTheFullStop() {
+        let rules = TranscriptTidier.CorrectionMapping.parse("et cetera -> etc.")
+        expectEqual(
+            TranscriptTidier.apply(corrections: rules, to: "it runs in the future, et cetera."),
+            "it runs in the future, etc."
+        )
+        // Mid-sentence the replacement keeps its own stop.
+        expectEqual(
+            TranscriptTidier.apply(corrections: rules, to: "logs, et cetera, and metrics"),
+            "logs, etc., and metrics"
+        )
+        // An ellipsis is deliberate and must survive.
+        expectEqual(TranscriptTidier.collapsingDoubledFullStop("wait... really"), "wait... really")
+        expectEqual(TranscriptTidier.collapsingDoubledFullStop("done.. now"), "done. now")
     }
 }

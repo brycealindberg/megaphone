@@ -761,6 +761,11 @@ final class AppState: ObservableObject, @unchecked Sendable {
     /// recording, read by the cleanup prompt at stop.
     private var screenVocabularyTerms: [String] = []
 
+    /// The raw window text behind those names, kept only for the duration of
+    /// one dictation so the vocabulary can be ranked against what is on screen.
+    private var screenTextSnapshot: String = ""
+
+
     @Published var isRecording = false {
         didSet {
             guard oldValue != isRecording else { return }
@@ -2993,6 +2998,17 @@ final class AppState: ObservableObject, @unchecked Sendable {
               ),
               current != pending.inserted else { return }
 
+        // MG-07 — the only place Megaphone ever learns what the text SHOULD have
+        // been. Recording the distance here is what makes "did this change help"
+        // answerable at all; without it every improvement is a vibe.
+        let quality = DictationQuality.score(inserted: pending.inserted, edited: current)
+        os_log(
+            .info,
+            log: recordingLog,
+            "dictation quality: %{public}.3f (%{public}d of %{public}d words changed, %{public}d chars)",
+            quality.accuracy, quality.changedWords, quality.totalWords, pending.inserted.count
+        )
+
         let corrections = DictationEditLearner.corrections(
             inserted: pending.inserted,
             edited: current
@@ -3157,10 +3173,13 @@ final class AppState: ObservableObject, @unchecked Sendable {
             return ("", .skippedEmptyRawTranscript, "", nil)
         }
 
-        let vocabulary = customVocabulary
-            .split { $0 == "," || $0.isNewline }
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
+        let vocabulary = ScreenVocabulary.rankingForScreen(
+            customVocabulary
+                .split { $0 == "," || $0.isNewline }
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty },
+            screenText: screenVocabularyEnabled ? screenTextSnapshot : ""
+        )
         let corrections = TranscriptTidier.CorrectionMapping.parse(wordCorrections)
         // The writing context for wherever this dictation lands, resolved from
         // the context captured at recording time. Drives both the formality
@@ -3202,11 +3221,15 @@ final class AppState: ObservableObject, @unchecked Sendable {
             // strings do not reach the recogniser, and telling the cleanup
             // model the correct spelling does not make it apply one.
             if !screenVocabularyTerms.isEmpty {
+                let before = t
                 t = SpokenNameRepair.apply(
                     t,
                     names: screenVocabularyTerms,
                     protected: SpeechAnalyzerService.splitVocabulary(speechRecognitionVocabulary)
                 )
+                if t != before {
+                    os_log(.info, log: recordingLog, "screen-name repair rewrote the transcript")
+                }
             }
             if profile.lightCommas {
                 t = CasualPunctuation.lighten(t)
@@ -3339,7 +3362,18 @@ final class AppState: ObservableObject, @unchecked Sendable {
         }
 
         if cleanupMode == .exact {
-            return (trimmedRawTranscript, .preservedExactWording, "", nil)
+            // Exact preserves the speaker's words — and a name the recogniser
+            // got wrong was never one of them. Repair still applies here; no
+            // other post-step does.
+            var exactText = trimmedRawTranscript
+            if !screenVocabularyTerms.isEmpty {
+                exactText = SpokenNameRepair.apply(
+                    exactText,
+                    names: screenVocabularyTerms,
+                    protected: SpeechAnalyzerService.splitVocabulary(speechRecognitionVocabulary)
+                )
+            }
+            return (exactText, .preservedExactWording, "", nil)
         }
 
         // Resolve a mid-utterance restart ("...no wait, let's do it over Zoom")
@@ -3905,6 +3939,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
     /// pipeline falls back to file-based analysis.
     private func startNativeStreamingSession() {
         screenVocabularyTerms = []
+        screenTextSnapshot = ""
         let dictionaryTerms = SpeechAnalyzerService.splitVocabulary(speechRecognitionVocabulary)
         let wantsScreenVocabulary = screenVocabularyEnabled
         let session = SpeechAnalyzerStreamingSession(
@@ -3919,7 +3954,19 @@ final class AppState: ObservableObject, @unchecked Sendable {
                     return []
                 }
                 let terms = ScreenVocabulary.terms(from: screenText, excluding: dictionaryTerms)
-                await MainActor.run { self?.screenVocabularyTerms = terms }
+                // MG-02 — this closure had never been observed running in the
+                // real app, only in a harness. Log it so the next dictation
+                // proves the chain instead of assuming it.
+                os_log(
+                    .info,
+                    log: recordingLog,
+                    "screen vocabulary: %{public}d chars of window text -> %{public}d terms [%{public}@]",
+                    screenText.count, terms.count, terms.prefix(8).joined(separator: ", ")
+                )
+                await MainActor.run {
+                    self?.screenVocabularyTerms = terms
+                    self?.screenTextSnapshot = screenText
+                }
                 return terms
             }
         )

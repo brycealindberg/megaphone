@@ -65,6 +65,39 @@ struct TranscriptTidier {
         return result.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
+    /// A replacement that already ends in a full stop lands next to the one the
+    /// speaker's sentence ended with: "et cetera." becomes "etc..". Measured on
+    /// the real-voice regression set, this was the single case where applying
+    /// corrections scored WORSE than not applying them.
+    ///
+    /// Only an exact pair is collapsed — an ellipsis is deliberate.
+    static func collapsingDoubledFullStop(_ text: String) -> String {
+        guard text.contains("..") else { return text }
+        var out = ""
+        var index = text.startIndex
+        while index < text.endIndex {
+            let character = text[index]
+            let next = text.index(after: index)
+            if character == ".", next < text.endIndex, text[next] == "." {
+                let after = text.index(after: next)
+                // Three or more in a row is an ellipsis; leave the run alone.
+                if after < text.endIndex, text[after] == "." {
+                    while index < text.endIndex, text[index] == "." {
+                        out.append(".")
+                        index = text.index(after: index)
+                    }
+                    continue
+                }
+                out.append(".")
+                index = after
+                continue
+            }
+            out.append(character)
+            index = next
+        }
+        return out
+    }
+
     static func apply(corrections: [CorrectionMapping], to transcript: String) -> String {
         let ordered = corrections
             .filter { !$0.spoken.isEmpty && !$0.replacement.isEmpty }
@@ -92,7 +125,7 @@ struct TranscriptTidier {
             }) else { continue }
             result.replaceCharacters(in: match.range, with: mapping.replacement)
         }
-        return result as String
+        return collapsingDoubledFullStop(result as String)
     }
 
     private static func removeFillers(from text: String) -> String {

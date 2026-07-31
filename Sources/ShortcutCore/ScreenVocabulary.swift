@@ -2,21 +2,26 @@ import Foundation
 import NaturalLanguage
 
 /// Turns the text visible in the frontmost window into a short list of proper
-/// nouns worth biasing the recogniser toward.
+/// nouns, used to repair a misheard name and to rank the cleanup vocabulary.
+/// (It is also handed to the recogniser's contextual strings, which ignore it —
+/// see `SpeechAnalyzerService.vocabularyContext`.)
 ///
 /// The case this exists for is the name you are looking at while you dictate —
 /// a colleague in a Slack thread, a client on an invoice, a library in a code
 /// review. Those are exactly the words a general speech model gets wrong, and
 /// exactly the words the screen in front of you already spells correctly.
 ///
-/// Extraction is deliberately conservative. Everything here competes with the
-/// user's own dictionary for the recogniser's attention, so a wall of window
-/// chrome ("Inbox", "Send", "Search") must never crowd out a real term.
+/// Extraction is deliberately conservative: every term is surface on which a
+/// repair can mis-fire, so a wall of window chrome ("Inbox", "Send", "Search")
+/// must never reach the list.
 enum ScreenVocabulary {
-    /// Contextual-string slots spent on screen text. `contextualStrings` itself
-    /// is uncapped, so this limit is not an API constraint — it keeps a busy
-    /// window from diluting the bias the dictionary is supposed to provide.
-    static let limit = 48
+    /// How many screen terms are kept. These now feed `SpokenNameRepair` rather
+    /// than a bias list, so every extra term is extra surface on which a repair
+    /// can mis-fire. Wispr Flow — the app that does this well — ships a median
+    /// of ~5 and a maximum of 18 (measured across 10,710 dictations), so this
+    /// sits just above its ceiling rather than at the 48 it started from. The
+    /// ordering below is a priority ranking, so a lower cap keeps the best.
+    static let limit = 16
 
     /// Longest phrase kept whole. Beyond four words a match is prose, not a name.
     private static let maxWords = 4
@@ -62,6 +67,28 @@ enum ScreenVocabulary {
         for token in midSentenceCapitals(in: text) { offer(token) }
 
         return ordered
+    }
+
+    /// The cleanup prompt shows only the first 40 vocabulary terms, ranked by
+    /// lifetime usage — so a term you are looking at right now loses to one you
+    /// happened to say a lot last month. Anything the screen mentions is
+    /// promoted to the front, which is the only way the terms below the cut can
+    /// ever surface. Relative order is otherwise preserved.
+    static func rankingForScreen(_ vocabulary: [String], screenText: String) -> [String] {
+        guard !screenText.isEmpty, !vocabulary.isEmpty else { return vocabulary }
+        let haystack = screenText.lowercased()
+        var onScreen: [String] = []
+        var rest: [String] = []
+        for term in vocabulary {
+            let needle = term.lowercased()
+            // Two characters match far too much prose to mean anything.
+            if needle.count >= 3, haystack.contains(needle) {
+                onScreen.append(term)
+            } else {
+                rest.append(term)
+            }
+        }
+        return onScreen + rest
     }
 
     // MARK: Sources

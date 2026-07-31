@@ -528,11 +528,29 @@ final class DictionaryStore: ObservableObject {
         return decoded
     }
 
-    private static func cleaned(_ term: String) -> String {
-        term
+    static func cleaned(_ term: String) -> String {
+        let collapsed = term
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .split(whereSeparator: \.isWhitespace)
             .joined(separator: " ")
+        return strippingSentencePunctuation(collapsed)
+    }
+
+    /// A word that ended a sentence was being learned with its full stop
+    /// attached — 25 such entries had accumulated ("Slack.", "Friday.", "August."),
+    /// 12 of them duplicating a clean entry that already existed.
+    ///
+    /// A trailing full stop is only removed when the rest of the term has none,
+    /// so "CLAUDE.md" and "e.g." survive intact while "MD." does not.
+    static func strippingSentencePunctuation(_ term: String) -> String {
+        var result = term
+        while let last = result.last, ",;:!?".contains(last) {
+            result.removeLast()
+        }
+        if result.last == ".", !result.dropLast().contains(".") {
+            result.removeLast()
+        }
+        return result.trimmingCharacters(in: .whitespaces)
     }
 
     private static func canonical(_ term: String) -> String {

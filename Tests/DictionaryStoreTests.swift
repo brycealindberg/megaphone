@@ -2,6 +2,7 @@ import Foundation
 
 enum DictionaryStoreTests {
     static func run() {
+        testLearnedTermsLoseSentencePunctuation()
         testManualTermsAndProjection()
         testConservativeLearning()
         testAutomaticLearningToggle()
@@ -395,5 +396,17 @@ enum DictionaryStoreTests {
 
     private static func expectEqual<T: Equatable>(_ actual: T, _ expected: T) {
         if actual != expected { fatalError("Expected \(expected), got \(actual)") }
+    }
+
+    /// Auto-learning was storing the full stop that ended the sentence.
+    private static func testLearnedTermsLoseSentencePunctuation() {
+        expectEqual(DictionaryStore.cleaned("Friday."), "Friday")
+        expectEqual(DictionaryStore.cleaned("Amsterdam,"), "Amsterdam")
+        expectEqual(DictionaryStore.cleaned("really?!"), "really")
+        expectEqual(DictionaryStore.cleaned("  Slack.  "), "Slack")
+        // A dot that belongs to the term stays.
+        expectEqual(DictionaryStore.cleaned("CLAUDE.md"), "CLAUDE.md")
+        expectEqual(DictionaryStore.cleaned("e.g."), "e.g.")
+        expectEqual(DictionaryStore.cleaned("n8n.io"), "n8n.io")
     }
 }

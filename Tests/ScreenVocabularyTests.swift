@@ -10,6 +10,7 @@ enum ScreenVocabularyTests {
         testAddressesAndPathsAreRejected()
         testMidSentenceCapitalsAreCaught()
         testRealisticWindowSeparatesNamesFromChrome()
+        testScreenRankingPromotesWhatIsVisible()
         testLimitIsRespected()
         testEmptyScreenYieldsNothing()
     }
@@ -123,6 +124,25 @@ enum ScreenVocabularyTests {
             expect(!terms.contains(chrome), "chrome \(chrome) became a term: \(terms)")
         }
         expect(terms.count <= ScreenVocabulary.limit, "a single window overflowed the limit: \(terms.count)")
+    }
+
+    /// The 40-slot prompt cut is the dictionary's only working consumer, so a
+    /// term below it is invisible. Being on screen is what should promote it.
+    private static func testScreenRankingPromotesWhatIsVisible() {
+        let vocab = ["alpha", "Kestrel", "beta", "Cadenza", "gamma"]
+        let ranked = ScreenVocabulary.rankingForScreen(
+            vocab, screenText: "the Cadenza swap and the Kestrel config"
+        )
+        expect(Array(ranked.prefix(2)) == ["Kestrel", "Cadenza"],
+               "expected on-screen terms first, got \(ranked)")
+        // Everything survives, and the losers keep their original order.
+        expect(ranked.count == vocab.count, "terms were dropped: \(ranked)")
+        expect(Array(ranked.suffix(3)) == ["alpha", "beta", "gamma"],
+               "relative order of off-screen terms changed: \(ranked)")
+        // No screen text is a no-op, not a reshuffle.
+        expect(ScreenVocabulary.rankingForScreen(vocab, screenText: "") == vocab, "empty screen should not reorder")
+        // A two-letter term matches too much prose to count as present.
+        expect(ScreenVocabulary.rankingForScreen(["ab"], screenText: "grab it")[0] == "ab", "short term should not be promoted")
     }
 
     private static func testLimitIsRespected() {
