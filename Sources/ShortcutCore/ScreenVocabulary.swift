@@ -80,41 +80,39 @@ enum ScreenVocabulary {
     /// ever surface. Relative order is otherwise preserved.
     static func rankingForScreen(_ vocabulary: [String], screenText: String) -> [String] {
         guard !screenText.isEmpty, !vocabulary.isEmpty else { return vocabulary }
-        let haystack = Array(screenText.lowercased())
+
+        // Built once, then O(1) per term. Scanning the window per term instead
+        // measured 26.9 ms for 166 terms against 2,482 characters — and this
+        // runs at stop time, on the path between releasing the key and seeing
+        // text, where the deterministic passes around it cost under 1 ms each.
+        let longest = vocabulary.reduce(1) { max($0, $1.split(separator: " ").count) }
+        let words = screenText.lowercased().split { !($0.isLetter || $0.isNumber) }.map(String.init)
+        var phrases = Set<String>()
+        if !words.isEmpty {
+            for start in words.indices {
+                var phrase = ""
+                for length in 0..<min(longest, words.count - start) {
+                    if length > 0 { phrase += " " }
+                    phrase += words[start + length]
+                    phrases.insert(phrase)
+                }
+            }
+        }
+
         var onScreen: [String] = []
         var rest: [String] = []
         for term in vocabulary {
-            let needle = term.lowercased()
             // Two characters match far too much prose to mean anything.
-            if needle.count >= 3, containsAsWord(Array(needle), in: haystack) {
+            let needle = term.lowercased()
+                .split { !($0.isLetter || $0.isNumber) }
+                .joined(separator: " ")
+            if needle.count >= 3, phrases.contains(needle) {
                 onScreen.append(term)
             } else {
                 rest.append(term)
             }
         }
         return onScreen + rest
-    }
-
-    /// Whole-word containment. A plain substring test promotes the wrong terms
-    /// and so costs the slots it was meant to save: measured on one paragraph of
-    /// ordinary prose it promoted "Aleks" out of "Aleksandra", "SOW" out of
-    /// "sowing" and "Code" out of "Codex" — three of forty slots, from a
-    /// paragraph, against a window that holds 2,400 characters.
-    private static func containsAsWord(_ needle: [Character], in haystack: [Character]) -> Bool {
-        guard !needle.isEmpty, haystack.count >= needle.count else { return false }
-        func isWordCharacter(_ c: Character) -> Bool { c.isLetter || c.isNumber }
-        for start in 0...(haystack.count - needle.count) {
-            if start > 0, isWordCharacter(haystack[start - 1]) { continue }
-            let end = start + needle.count
-            if end < haystack.count, isWordCharacter(haystack[end]) { continue }
-            var matched = true
-            for offset in 0..<needle.count where haystack[start + offset] != needle[offset] {
-                matched = false
-                break
-            }
-            if matched { return true }
-        }
-        return false
     }
 
     // MARK: Sources
