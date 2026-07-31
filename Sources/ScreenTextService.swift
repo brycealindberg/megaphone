@@ -18,14 +18,19 @@ final class ScreenTextService {
     private static let maxDepth = 24
     private static let collectionBudget = maxLength * 3
 
-    func visibleText() async -> String? {
+    /// - Parameter allowingOCR: pass `false` to stay on the accessibility tree.
+    ///   Plain dictation reads the screen on *every* utterance, and screenshotting
+    ///   the window that often is both slower and a much larger thing to do
+    ///   quietly than reading text the app already publishes.
+    func visibleText(allowingOCR: Bool = true) async -> String? {
         guard let frontmost = NSWorkspace.shared.frontmostApplication else { return nil }
         let pid = frontmost.processIdentifier
         let axText = accessibilityText(processIdentifier: pid)
         if let axText, axText.count >= Self.minUsefulAXLength {
             return axText
         }
-        if CGPreflightScreenCaptureAccess(),
+        if allowingOCR,
+           CGPreflightScreenCaptureAccess(),
            let ocrText = await recognizedText(processIdentifier: pid),
            ocrText.count > (axText?.count ?? 0) {
             return ocrText

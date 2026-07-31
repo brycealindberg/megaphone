@@ -113,15 +113,26 @@ enum SpeechAnalyzerService {
     /// Splits Megaphone's free-form vocabulary text into individual terms and
     /// wraps them in an `AnalysisContext` so the on-device model is biased
     /// toward the user's names and jargon.
-    static func vocabularyContext(from rawVocabulary: String) -> AnalysisContext? {
-        let terms = rawVocabulary
+    static func vocabularyContext(
+        from rawVocabulary: String,
+        additionalTerms: [String] = []
+    ) -> AnalysisContext? {
+        let terms = splitVocabulary(rawVocabulary)
+        // Screen-derived terms go last: the user's own dictionary is the
+        // stronger signal, and this list is rebuilt on every dictation.
+        var seen = Set(terms.map { $0.lowercased() })
+        let combined = terms + additionalTerms.filter { seen.insert($0.lowercased()).inserted }
+        guard !combined.isEmpty else { return nil }
+        let context = AnalysisContext()
+        context.contextualStrings[.general] = combined
+        return context
+    }
+
+    static func splitVocabulary(_ rawVocabulary: String) -> [String] {
+        rawVocabulary
             .split { $0 == "," || $0.isNewline }
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
-        guard !terms.isEmpty else { return nil }
-        let context = AnalysisContext()
-        context.contextualStrings[.general] = terms
-        return context
     }
 
     static func makeTranscriber(locale: Locale) -> SpeechTranscriber {
@@ -276,8 +287,13 @@ enum SpeechAnalyzerService {
 /// session failed to start, `commitAndAwaitFinal()` throws and the caller
 /// falls back to file-based transcription.
 final class SpeechAnalyzerStreamingSession: @unchecked Sendable {
+    /// How long the recogniser will wait on extra contextual terms before
+    /// starting without them. Nothing here is worth delaying a transcript for.
+    static let additionalTermsTimeout: TimeInterval = 1.2
+
     private let localePreference: String
     private let vocabulary: String
+    private let additionalTerms: @Sendable () async -> [String]
 
     /// Serializes all mutable state below and orders sample delivery.
     private let queue = DispatchQueue(label: "com.kuberwastaken.megaphone.speechanalyzer-input")
@@ -299,9 +315,14 @@ final class SpeechAnalyzerStreamingSession: @unchecked Sendable {
         interleaved: true
     )
 
-    init(localePreference: String, vocabulary: String) {
+    init(
+        localePreference: String,
+        vocabulary: String,
+        additionalTerms: @escaping @Sendable () async -> [String] = { [] }
+    ) {
         self.localePreference = localePreference
         self.vocabulary = vocabulary
+        self.additionalTerms = additionalTerms
     }
 
     // MARK: Lifecycle
@@ -313,12 +334,20 @@ final class SpeechAnalyzerStreamingSession: @unchecked Sendable {
             guard SpeechTranscriber.isAvailable else {
                 throw SpeechAnalyzerServiceError.transcriberUnavailable
             }
+            // Gather extra terms while the model assets are checked. The
+            // recogniser cannot start before that finishes anyway, and audio
+            // recorded meanwhile waits in `pendingSamples`, so this is free.
+            async let extraTerms = additionalTermsWithinTimeout()
+
             let locale = try await SpeechLocaleResolver.resolve(preference: localePreference)
             let transcriber = SpeechAnalyzerService.makeTranscriber(locale: locale)
             try await SpeechAnalyzerService.ensureAssets(for: transcriber, locale: locale)
 
             let analyzer = SpeechAnalyzer(modules: [transcriber])
-            if let context = SpeechAnalyzerService.vocabularyContext(from: vocabulary) {
+            if let context = SpeechAnalyzerService.vocabularyContext(
+                from: vocabulary,
+                additionalTerms: await extraTerms
+            ) {
                 do {
                     try await analyzer.setContext(context)
                 } catch {
@@ -360,6 +389,33 @@ final class SpeechAnalyzerStreamingSession: @unchecked Sendable {
             }
             os_log(.info, log: speechLog, "streaming session started (locale: %{public}@)",
                    locale.identifier(.bcp47))
+        }
+    }
+
+    /// Collects the extra contextual terms, giving up after
+    /// `additionalTermsTimeout`. The provider reads the accessibility tree of
+    /// another process, which can stall on an unresponsive app, so the wait is
+    /// genuinely abandoned rather than cancelled — a slow read must never hold
+    /// a transcript hostage.
+    private func additionalTermsWithinTimeout() async -> [String] {
+        let work = Task.detached(priority: .userInitiated) { [additionalTerms] in
+            await additionalTerms()
+        }
+        return await withCheckedContinuation { continuation in
+            let delivered = NSLock()
+            var isDone = false
+            func deliver(_ terms: [String]) {
+                delivered.lock()
+                let isFirst = !isDone
+                isDone = true
+                delivered.unlock()
+                if isFirst { continuation.resume(returning: terms) }
+            }
+            Task { deliver(await work.value) }
+            queue.asyncAfter(deadline: .now() + Self.additionalTermsTimeout) {
+                work.cancel()
+                deliver([])
+            }
         }
     }
 

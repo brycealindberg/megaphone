@@ -265,6 +265,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
     private let wakeCommandsEnabledStorageKey = "wake_commands_enabled"
     private let plainMegaphoneWakeWordEnabledStorageKey = "plain_megaphone_wake_word_enabled"
     private let wakeScreenContextEnabledStorageKey = "wake_screen_context_enabled"
+    private let screenVocabularyEnabledStorageKey = "screen_vocabulary_enabled"
     private let commandModeEnabledStorageKey = "command_mode_enabled"
     private let commandModeStyleStorageKey = "command_mode_style"
     private let commandModeManualModifierStorageKey = "command_mode_manual_modifier"
@@ -748,6 +749,18 @@ final class AppState: ObservableObject, @unchecked Sendable {
         }
     }
 
+    /// Bias the recogniser toward proper nouns visible in the frontmost window,
+    /// so a name you are looking at is spelled the way the window spells it.
+    @Published var screenVocabularyEnabled: Bool {
+        didSet {
+            UserDefaults.standard.set(screenVocabularyEnabled, forKey: screenVocabularyEnabledStorageKey)
+        }
+    }
+
+    /// Names lifted from the screen for the dictation in flight. Set during
+    /// recording, read by the cleanup prompt at stop.
+    private var screenVocabularyTerms: [String] = []
+
     @Published var isRecording = false {
         didSet {
             guard oldValue != isRecording else { return }
@@ -991,6 +1004,9 @@ final class AppState: ObservableObject, @unchecked Sendable {
         let wakeScreenContextEnabled = UserDefaults.standard.object(forKey: wakeScreenContextEnabledStorageKey) == nil
             ? true
             : UserDefaults.standard.bool(forKey: wakeScreenContextEnabledStorageKey)
+        let screenVocabularyEnabled = UserDefaults.standard.object(forKey: screenVocabularyEnabledStorageKey) == nil
+            ? true
+            : UserDefaults.standard.bool(forKey: screenVocabularyEnabledStorageKey)
 
         let initialAccessibility = AXIsProcessTrusted()
         let initialScreenCapturePermission = CGPreflightScreenCaptureAccess()
@@ -1091,6 +1107,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
         self.userTransforms = initialUserTransforms
         self.wakeCommandsEnabled = wakeCommandsEnabled
         self.wakeScreenContextEnabled = wakeScreenContextEnabled
+        self.screenVocabularyEnabled = screenVocabularyEnabled
         self.plainMegaphoneWakeWordEnabled = plainMegaphoneWakeWordEnabled
         self.pipelineHistory = savedHistory
         self.hasAccessibility = initialAccessibility
@@ -3360,7 +3377,8 @@ final class AppState: ObservableObject, @unchecked Sendable {
                     .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
                     .joined(separator: "\n"),
                 formality: formality,
-                allowStructure: profile.lists
+                allowStructure: profile.lists,
+                screenNames: screenVocabularyTerms
             )
             let result = try await AppleFoundationModelsPostProcessor.shared.cleanup(
                 request,
@@ -3865,9 +3883,24 @@ final class AppState: ObservableObject, @unchecked Sendable {
     /// failures are deferred: they surface in `commitAndAwaitFinal()` and the
     /// pipeline falls back to file-based analysis.
     private func startNativeStreamingSession() {
+        screenVocabularyTerms = []
+        let dictionaryTerms = SpeechAnalyzerService.splitVocabulary(speechRecognitionVocabulary)
+        let wantsScreenVocabulary = screenVocabularyEnabled
         let session = SpeechAnalyzerStreamingSession(
             localePreference: transcriptionLanguage,
-            vocabulary: speechRecognitionVocabulary
+            vocabulary: speechRecognitionVocabulary,
+            additionalTerms: { [weak self] in
+                guard wantsScreenVocabulary else { return [] }
+                // Accessibility tree only: reading the screen on every
+                // utterance should not mean screenshotting it on every
+                // utterance. The OCR fallback stays with wake commands.
+                guard let screenText = await ScreenTextService.shared.visibleText(allowingOCR: false) else {
+                    return []
+                }
+                let terms = ScreenVocabulary.terms(from: screenText, excluding: dictionaryTerms)
+                await MainActor.run { self?.screenVocabularyTerms = terms }
+                return terms
+            }
         )
         session.start()
         nativeStreamingSession = session

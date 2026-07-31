@@ -46,6 +46,10 @@ struct SmartCleanupRequest: Sendable {
     /// anywhere — a terminal without bracketed paste would run each pasted line,
     /// and casual chat needs its bullet ban lifted before lists work at all.
     var allowStructure: Bool = false
+    /// Proper nouns read off the frontmost window for this dictation. Kept
+    /// apart from `vocabulary` on purpose: that list is truncated to 40 in the
+    /// prompt, so merging these would silently evict the user's own terms.
+    var screenNames: [String] = []
 
     init(
         transcript: String,
@@ -60,8 +64,10 @@ struct SmartCleanupRequest: Sendable {
         outputLanguage: String,
         customInstructions: String,
         formality: WritingFormality = .balanced,
-        allowStructure: Bool = false
+        allowStructure: Bool = false,
+        screenNames: [String] = []
     ) {
+        self.screenNames = screenNames
         self.transcript = transcript
         self.appName = appName
         self.bundleIdentifier = bundleIdentifier
@@ -829,6 +835,15 @@ actor AppleFoundationModelsPostProcessor {
         }
         if !request.vocabulary.isEmpty {
             hints.append("Preferred spellings: " + request.vocabulary.prefix(40).joined(separator: ", "))
+        }
+        if !request.screenNames.isEmpty {
+            // Spellings only. The model must not treat what is on screen as
+            // something to answer, summarize, or write about.
+            hints.append(
+                "Names visible on screen (use these spellings if the speaker said one; "
+                + "never add them to the text otherwise): "
+                + request.screenNames.prefix(24).joined(separator: ", ")
+            )
         }
         if !request.corrections.isEmpty {
             let mappings = request.corrections.prefix(40).map { "\($0.heard) -> \($0.written)" }

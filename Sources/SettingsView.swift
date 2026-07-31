@@ -734,6 +734,18 @@ struct GeneralSettingsView: View {
                     .foregroundStyle(.secondary)
                 foundationModelStatus
             }
+
+            Divider()
+                .padding(.vertical, 2)
+
+            Toggle(
+                "Learn names from the screen",
+                isOn: $appState.screenVocabularyEnabled
+            )
+
+            Text("Reads the proper nouns visible in the window you're dictating into, so a name you're looking at gets spelled the way that window spells it. Accessibility text only, never a screenshot, and it stays on your Mac — nothing is stored between dictations.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
     }
 
