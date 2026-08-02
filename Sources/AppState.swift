@@ -3228,6 +3228,12 @@ final class AppState: ObservableObject, @unchecked Sendable {
             if profile.emoji {
                 t = SpokenEmoji.substitute(t)
             }
+            // Spoken "exclamation mark" / "question mark". The cleanup model
+            // handles a trailing one and gets everything else wrong — a mark
+            // mid-utterance stays as literal words and an exclamation becomes a
+            // floating " !" — so the rule lives in code. Unconditional: it only
+            // fires on a phrase that is unambiguously a dictated mark.
+            t = SpokenPunctuation.substitute(t)
             // Repair a name against what is on screen. Deterministic because
             // neither of the two obvious routes works on this OS: contextual
             // strings do not reach the recogniser, and telling the cleanup
@@ -3420,6 +3426,12 @@ final class AppState: ObservableObject, @unchecked Sendable {
         if profile.emoji {
             cleanupInput = SpokenEmoji.substitute(cleanupInput)
         }
+        // Ahead of the model for the same reason as the two above: it treats a
+        // trailing "question mark" as abandoned wording and drops it, and a
+        // post-step cannot rewrite what is already gone. Converting first hands
+        // it ordinary punctuation, which it then capitalizes and spaces
+        // correctly. Idempotent, so the `finishText` copy is free.
+        cleanupInput = SpokenPunctuation.substitute(cleanupInput)
 
         let deterministic = TranscriptTidier.tidy(cleanupInput, corrections: corrections)
         let safeFallback = deterministic.isEmpty ? trimmedRawTranscript : deterministic
