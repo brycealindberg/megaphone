@@ -23,6 +23,7 @@ enum DictionaryStoreTests {
         testEditCorrectionsNeedTwoSightings()
         testEditCaseFixAppliesImmediately()
         testEditCorrectionRespectsRejectionAndManual()
+        testLearningRecordsTheMishearThatCausedIt()
     }
 
     /// An edit is stronger evidence than a transcript sighting, but still not
@@ -409,4 +410,28 @@ enum DictionaryStoreTests {
         expectEqual(DictionaryStore.cleaned("e.g."), "e.g.")
         expectEqual(DictionaryStore.cleaned("n8n.io"), "n8n.io")
     }
+
+    /// The half that makes a learned correction actionable. A term alone can
+    /// only ever be a preferred spelling — advisory, and capped at 40 of them.
+    /// The heard->written pair can become a deterministic rule that always
+    /// fires. It was being discarded, which is why 161 already-learned entries
+    /// cannot be promoted.
+    private static func testLearningRecordsTheMishearThatCausedIt() {
+        let (store, defaults) = makeStore()
+        defer { clear(defaults) }
+
+        _ = store.observeEditCorrection(
+            DictationEditCorrection(heard: "Merrick", written: "Marek", isCaseOnly: false)
+        )
+        expectEqual(store.entries.first { $0.term == "Marek" }?.observedSource, "Merrick")
+
+        // A later, different mishearing of the same word must not overwrite the
+        // first — that one is the observation the correction was learned from.
+        _ = store.observeEditCorrection(
+            DictationEditCorrection(heard: "Marrick", written: "Marek", isCaseOnly: false)
+        )
+        expectEqual(store.entries.first { $0.term == "Marek" }?.observedSource, "Merrick")
+        expectEqual(store.entries.first { $0.term == "Marek" }?.observationCount, 2)
+    }
+
 }

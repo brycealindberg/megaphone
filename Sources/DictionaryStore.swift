@@ -23,6 +23,14 @@ struct DictionaryEntry: Codable, Identifiable, Equatable {
     var usageCount: Int
     var createdAt: Date
     var updatedAt: Date
+    /// What the recogniser actually wrote, when this entry was learned from an
+    /// edit. Kept because it is the half that makes a correction *actionable*:
+    /// a term alone can only be offered to the model as a preferred spelling
+    /// (advisory, and capped at 40), whereas a heard->written pair can become a
+    /// deterministic `word_corrections` rule that always fires. It was being
+    /// discarded at the moment of learning, so 161 learned entries have no way
+    /// back to what they were meant to fix.
+    var observedSource: String?
 
     init(
         id: UUID = UUID(),
@@ -34,7 +42,8 @@ struct DictionaryEntry: Codable, Identifiable, Equatable {
         starred: Bool = false,
         usageCount: Int = 0,
         createdAt: Date = Date(),
-        updatedAt: Date = Date()
+        updatedAt: Date = Date(),
+        observedSource: String? = nil
     ) {
         self.id = id
         self.term = term
@@ -46,6 +55,7 @@ struct DictionaryEntry: Codable, Identifiable, Equatable {
         self.usageCount = usageCount
         self.createdAt = createdAt
         self.updatedAt = updatedAt
+        self.observedSource = observedSource
     }
 
     /// Entries stored before starring/usage ranking shipped lack these keys;
@@ -62,6 +72,7 @@ struct DictionaryEntry: Codable, Identifiable, Equatable {
         usageCount = try container.decodeIfPresent(Int.self, forKey: .usageCount) ?? 0
         createdAt = try container.decode(Date.self, forKey: .createdAt)
         updatedAt = try container.decode(Date.self, forKey: .updatedAt)
+        observedSource = try container.decodeIfPresent(String.self, forKey: .observedSource)
     }
 
     /// Prompt-facing ranking: starred terms first, then most-used, then
@@ -371,6 +382,13 @@ final class DictionaryStore: ObservableObject {
             }
             guard entries[index].source == .learned,
                   entries[index].status != .rejected else { return nil }
+            // Keep the misheard form. Without it a confirmed correction can only
+            // ever be a preferred spelling; with it, it can become a
+            // deterministic rule. First observation wins, so a later unrelated
+            // mishearing of the same word cannot overwrite it.
+            if entries[index].observedSource == nil {
+                entries[index].observedSource = correction.heard
+            }
             entries[index].observationCount += 1
             if entries[index].observationCount >= Self.editLearningThreshold {
                 entries[index].status = .active
@@ -392,7 +410,8 @@ final class DictionaryStore: ObservableObject {
             isEnabled: true,
             observationCount: 1,
             createdAt: date,
-            updatedAt: date
+            updatedAt: date,
+            observedSource: correction.heard
         ))
         persist()
         return Self.editLearningThreshold <= 1 ? .active : .suggested
