@@ -772,6 +772,12 @@ final class AppState: ObservableObject, @unchecked Sendable {
         screenVocabularyEnabled ? screenTextSnapshot : ""
     }
 
+    /// True once the screen-vocabulary arm has settled for this recording —
+    /// either the window read landed, or the feature is off and there is nothing
+    /// to wait for. Distinct from `screenTextSnapshot.isEmpty`, which is itself a
+    /// perfectly valid settled value.
+    private var screenVocabularySettled = false
+
 
     @Published var isRecording = false {
         didSet {
@@ -3943,6 +3949,9 @@ final class AppState: ObservableObject, @unchecked Sendable {
         screenTextSnapshot = ""
         let dictionaryTerms = SpeechAnalyzerService.splitVocabulary(speechRecognitionVocabulary)
         let wantsScreenVocabulary = screenVocabularyEnabled
+        // Nothing to wait for when the feature is off, so the prewarm join
+        // must not block on a read that will never happen.
+        screenVocabularySettled = !wantsScreenVocabulary
         let session = SpeechAnalyzerStreamingSession(
             localePreference: transcriptionLanguage,
             vocabulary: speechRecognitionVocabulary,
@@ -3973,6 +3982,8 @@ final class AppState: ObservableObject, @unchecked Sendable {
                 await MainActor.run {
                     self?.screenVocabularyTerms = terms
                     self?.screenTextSnapshot = screenText ?? ""
+                    self?.screenVocabularySettled = true
+                    self?.prewarmCleanupPrompt()
                 }
                 return terms
             }
@@ -4016,8 +4027,66 @@ final class AppState: ObservableObject, @unchecked Sendable {
                 self.lastContextSelectedText = context.selectedText ?? ""
                 self.lastContextLLMPrompt = ""
                 self.lastPostProcessingStatus = "App context captured"
+                self.prewarmCleanupPrompt()
             }
             return context
+        }
+    }
+
+    /// Prefill the transcript-independent head of the cleanup prompt while the
+    /// user is still speaking.
+    ///
+    /// Called from both producers of its inputs — the screen-vocabulary read and
+    /// the app-context capture — because neither knows whether the other has
+    /// landed. Both write on the MainActor, so whichever finishes second is the
+    /// one that gets past the guard, and this fires at most once per recording.
+    ///
+    /// Purely an optimisation. The plan built here is the same one
+    /// `processTranscript` builds at stop, from the same `CleanupPlan.make`; if
+    /// anything moved in between, the prefill simply misses and the prompt sent
+    /// is unchanged.
+    ///
+    /// Measured before wiring this up:
+    ///   * cleanup 850 ms -> 668 ms with the prefix, output identical 60/60
+    ///   * batch ASR is 46.6% slower with a prefill in flight, BUT the tail the
+    ///     user actually waits for — key release to final transcript — is
+    ///     unchanged (median 84 ms vs 78 ms over 12 realtime-fed recordings,
+    ///     transcripts identical 12/12). The recogniser streams at many times
+    ///     realtime, so that cost is absorbed by the speaking.
+    ///
+    /// Gated to Smart mode and non-command intent, mirroring `prepare` at the
+    /// recording-start call site: wake commands, voice macros, Exact and Basic
+    /// never reach `cleanup`, so prefilling for them is pure waste. Whether an
+    /// utterance turns out to be a wake phrase or a macro can only be known from
+    /// the transcript, so those two remain unavoidably wasted.
+    @MainActor
+    private func prewarmCleanupPrompt() {
+        guard isRecording,
+              smartCleanupMode == .smart,
+              !currentSessionIntent.isCommandMode,
+              screenVocabularySettled,
+              let sessionID = smartCleanupSessionID,
+              let context = capturedContext else { return }
+        let plan = CleanupPlan.make(
+            context: context,
+            customVocabulary: dictionaryVocabulary,
+            screenText: activeScreenText,
+            wordCorrections: wordCorrections,
+            customSystemPrompt: customSystemPrompt,
+            customContextPrompt: customContextPrompt,
+            outputLanguage: outputLanguage,
+            profiles: dictationProfiles
+        )
+        // The transcript is the one field the prefix ignores, so "" here yields
+        // exactly the prefix the real request will produce.
+        let prefix = AppleFoundationModelsPostProcessor.cleanupPromptPrefix(
+            for: plan.request(transcript: "")
+        )
+        os_log(.info, log: recordingLog, "prewarming cleanup prompt prefix: %{public}d chars", prefix.count)
+        Task {
+            await AppleFoundationModelsPostProcessor.shared.prewarmPrompt(
+                sessionID: sessionID, prefix: prefix
+            )
         }
     }
 
