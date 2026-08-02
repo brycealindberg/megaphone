@@ -148,6 +148,19 @@ enum SpokenEmojiTests {
         expect(SpokenEmoji.substitute("Let's go 🚀!") == "Let's go 🚀!",
                SpokenEmoji.substitute("Let's go 🚀!"))
 
+        // Bryce's real dictation, recovered from PipelineHistory 2026-08-01
+        // 23:01: "Heart emoji." produced "❤️." — and the first version of this
+        // fix still did, because ❤️ is U+2764 + U+FE0F and U+2764's
+        // isEmojiPresentation is false. Every glyph in the tests above happens
+        // to be presentation-form, so nothing caught it.
+        expect(SpokenEmoji.substitute("Heart emoji.") == "❤️", SpokenEmoji.substitute("Heart emoji."))
+        expect(SpokenEmoji.substitute("Warning sign emoji.") == "⚠️", SpokenEmoji.substitute("Warning sign emoji."))
+        expect(SpokenEmoji.substitute("Heart emoji!") == "❤️!", SpokenEmoji.substitute("Heart emoji!"))
+        expect(SpokenEmoji.isEmoji("❤️"), "a variation-selector emoji must count as one")
+        expect(SpokenEmoji.isEmoji("😂"), "a presentation-form emoji must count as one")
+        expect(!SpokenEmoji.isEmoji("1"), "a digit is not an emoji")
+        expect(!SpokenEmoji.isEmoji("#"), "a hash is not an emoji")
+
         // Text with no emoji at all is untouched, including its punctuation.
         expect(SpokenEmoji.substitute("Thanks so much, see you tomorrow.") == "Thanks so much, see you tomorrow.",
                SpokenEmoji.substitute("Thanks so much, see you tomorrow."))

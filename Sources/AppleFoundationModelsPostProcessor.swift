@@ -1069,15 +1069,12 @@ actor AppleFoundationModelsPostProcessor {
     /// Words the model must never silently delete. The system prompt already tells it to
     /// preserve profanity, but the on-device model drops or paraphrases around these anyway;
     /// this enforces that contract so the transcript falls back to basic cleanup instead.
-    /// Every emoji grapheme in the text. Presentation-form only, so ordinary
-    /// characters that happen to carry an emoji property (digits, `#`, `©`)
-    /// are not mistaken for one.
+    /// Every emoji grapheme in the text. Shares `SpokenEmoji.isEmoji` so the
+    /// preservation guard and the punctuation tidy agree on what an emoji is —
+    /// they disagreed at first, and the guard silently ignored ❤️ and every
+    /// other variation-selector emoji.
     static func emojiGlyphs(_ text: String) -> Set<String> {
-        Set(
-            text.map(String.init).filter { character in
-                character.unicodeScalars.contains { $0.properties.isEmojiPresentation }
-            }
-        )
+        Set(text.filter(SpokenEmoji.isEmoji).map(String.init))
     }
 
     private static let mustPreserveTerms: Set<String> = [

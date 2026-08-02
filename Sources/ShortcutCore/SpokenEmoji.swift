@@ -160,19 +160,64 @@ enum SpokenEmoji {
     /// A trailing mark is only removed at the very end of the text. Mid-sentence
     /// ("sounds good 👍, see you tomorrow") the comma is real and stays, and "!"
     /// and "?" are never removed anywhere because they carry meaning.
+    /// True for a character that renders as an emoji.
+    ///
+    /// `isEmojiPresentation` alone is not enough and fails silently: ❤️ is
+    /// U+2764 plus U+FE0F, and U+2764's presentation property is *false* because
+    /// it defaults to text form. Checking only that property skipped every
+    /// variation-selector emoji — ❤️ ⚠️ ✏️ — which is how "Heart emoji." shipped
+    /// still producing "❤️." after this pass was supposedly fixed. Found in a
+    /// real dictation, not in a test: every glyph in the tests (😂 🙏 🚀 😢)
+    /// happens to be presentation-form.
+    static func isEmoji(_ character: Character) -> Bool {
+        guard let first = character.unicodeScalars.first, first.properties.isEmoji else { return false }
+        return first.properties.isEmojiPresentation || character.unicodeScalars.contains("\u{FE0F}")
+    }
+
+    /// Deliberately not a regex. `\p{Extended_Pictographic}` matches the *scalar*
+    /// U+2764, so in "❤️." the U+FE0F sits between the match and the full stop
+    /// and the pattern never reaches the punctuation — the first version of this
+    /// function was a regex and left Bryce's real "❤️." untouched. Working in
+    /// `Character`s means a grapheme cluster is one unit, however many scalars,
+    /// so skin tones and ZWJ sequences come along for free.
     static func tidyPunctuation(around text: String) -> String {
-        guard text.unicodeScalars.contains(where: { $0.properties.isEmojiPresentation })
-        else { return text }
-        var result = text
-        for (pattern, template) in [
-            (#"[ \t]*,[ \t]*(?=\p{Extended_Pictographic})"#, " "),
-            (#"(\p{Extended_Pictographic})[ \t]*[.,]+[ \t]*$"#, "$1"),
-        ] {
-            result = result.replacingOccurrences(
-                of: pattern, with: template, options: .regularExpression
-            )
+        guard text.contains(where: isEmoji) else { return text }
+        var characters = Array(text)
+
+        // A trailing "." or "," at the very end, when an emoji is what precedes
+        // it. Mid-sentence punctuation is real and is left alone, as are "!"
+        // and "?" anywhere.
+        var end = characters.count
+        while end > 0, characters[end - 1] == " " || characters[end - 1] == "\t" { end -= 1 }
+        var afterMarks = end
+        while afterMarks > 0, characters[afterMarks - 1] == "." || characters[afterMarks - 1] == "," {
+            afterMarks -= 1
         }
-        return result
+        if afterMarks < end, afterMarks > 0, isEmoji(characters[afterMarks - 1]) {
+            characters.removeSubrange(afterMarks...)
+        }
+
+        // A comma the recogniser inserted where the speaker paused before naming
+        // the emoji: "Thanks so much, 🙏" is one phrase, not a list.
+        var result: [Character] = []
+        var index = 0
+        while index < characters.count {
+            if characters[index] == "," {
+                var lookahead = index + 1
+                while lookahead < characters.count,
+                      characters[lookahead] == " " || characters[lookahead] == "\t" {
+                    lookahead += 1
+                }
+                if lookahead < characters.count, isEmoji(characters[lookahead]) {
+                    if !result.isEmpty { result.append(" ") }
+                    index = lookahead
+                    continue
+                }
+            }
+            result.append(characters[index])
+            index += 1
+        }
+        return String(result)
     }
 
     private static func replacePhrases(in text: String) -> String {
