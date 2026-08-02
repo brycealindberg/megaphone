@@ -3002,12 +3002,21 @@ final class AppState: ObservableObject, @unchecked Sendable {
         // been. Recording the distance here is what makes "did this change help"
         // answerable at all; without it every improvement is a vibe.
         let quality = DictationQuality.score(inserted: pending.inserted, edited: current)
-        os_log(
-            .info,
-            log: recordingLog,
-            "dictation quality: %{public}.3f (%{public}d of %{public}d words changed, %{public}d chars)",
-            quality.accuracy, quality.changedWords, quality.totalWords, pending.inserted.count
-        )
+        if quality.isMeasured {
+            os_log(
+                .info,
+                log: recordingLog,
+                "dictation quality: %{public}.3f (%{public}d of %{public}d words changed, %{public}d chars)",
+                quality.accuracy, quality.changedWords, quality.totalWords, pending.inserted.count
+            )
+        } else {
+            os_log(
+                .info,
+                log: recordingLog,
+                "dictation quality: unmeasured (field too large to align, %{public}d words)",
+                quality.totalWords
+            )
+        }
 
         let corrections = DictationEditLearner.corrections(
             inserted: pending.inserted,

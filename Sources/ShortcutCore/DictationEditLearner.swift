@@ -149,12 +149,26 @@ enum DictationEditLearner {
             .filter { !$0.isEmpty }
     }
 
-    /// Word-level diff via longest common subsequence, returning only the
-    /// one-for-one replacements. Insertions and deletions are deliberately
-    /// ignored: added or removed words are the user writing, not correcting.
-    static func alignedSubstitutions(_ before: [String], _ after: [String]) -> [(String, String)] {
+    /// A word-level alignment of `before` onto `after`.
+    struct Alignment {
+        /// One-for-one replacements, including recapitalisations.
+        let substitutions: [(String, String)]
+        /// Words of `before` that nothing in `after` corresponds to.
+        ///
+        /// Insertions have no equivalent here on purpose: `after` may be an
+        /// entire document, so every word of it that is not part of this
+        /// dictation would count as one. `before` is always bounded, so a drop
+        /// out of it is a real signal and an add into `after` is not.
+        let deletions: [String]
+    }
+
+    /// Word-level diff via longest common subsequence. Returns nil when the
+    /// input is too large to align, which is not the same as "nothing changed"
+    /// — callers that report a number must say "unmeasured" rather than
+    /// reporting a perfect score they did not compute.
+    static func align(_ before: [String], _ after: [String]) -> Alignment? {
         // Guard against pathological inputs; a field can contain a whole document.
-        guard before.count <= 400, after.count <= 400 else { return [] }
+        guard before.count <= 400, after.count <= 400 else { return nil }
 
         let key: (String) -> String = { $0.lowercased().trimmingCharacters(in: punctuation) }
         let n = before.count, m = after.count
@@ -168,6 +182,7 @@ enum DictationEditLearner {
         }
 
         var result: [(String, String)] = []
+        var dropped: [String] = []
         var i = 0, j = 0
         while i < n && j < m {
             if key(before[i]) == key(after[j]) {
@@ -181,12 +196,23 @@ enum DictationEditLearner {
                     result.append((before[i], after[j]))
                     i += 1; j += 1
                 } else {
+                    dropped.append(before[i])
                     i += 1
                 }
             } else {
                 j += 1
             }
         }
-        return result
+        // Whatever is left of `before` ran off the end of `after` — a truncated
+        // result is the largest drop there is, and the loop above exits without
+        // ever seeing it.
+        if i < n { dropped.append(contentsOf: before[i..<n]) }
+        return Alignment(substitutions: result, deletions: dropped)
+    }
+
+    /// The replacements alone. Added or removed words are the user writing
+    /// rather than correcting, so the edit learner never learns from them.
+    static func alignedSubstitutions(_ before: [String], _ after: [String]) -> [(String, String)] {
+        align(before, after)?.substitutions ?? []
     }
 }
