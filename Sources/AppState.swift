@@ -765,6 +765,13 @@ final class AppState: ObservableObject, @unchecked Sendable {
     /// one dictation so the vocabulary can be ranked against what is on screen.
     private var screenTextSnapshot: String = ""
 
+    /// The screen text the cleanup vocabulary is ranked against. One expression,
+    /// read by both the prewarm path and `processTranscript`, so the two cannot
+    /// resolve the enabled-check differently and rank differently because of it.
+    private var activeScreenText: String {
+        screenVocabularyEnabled ? screenTextSnapshot : ""
+    }
+
 
     @Published var isRecording = false {
         didSet {
@@ -3182,29 +3189,29 @@ final class AppState: ObservableObject, @unchecked Sendable {
             return ("", .skippedEmptyRawTranscript, "", nil)
         }
 
-        let vocabulary = ScreenVocabulary.rankingForScreen(
-            customVocabulary
-                .split { $0 == "," || $0.isNewline }
-                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-                .filter { !$0.isEmpty },
-            screenText: screenVocabularyEnabled ? screenTextSnapshot : ""
+        let plan = CleanupPlan.make(
+            context: context,
+            customVocabulary: customVocabulary,
+            screenText: activeScreenText,
+            wordCorrections: wordCorrections,
+            customSystemPrompt: customSystemPrompt,
+            customContextPrompt: customContextPrompt,
+            outputLanguage: outputLanguage,
+            profiles: profiles
         )
         // The window's text has done its one job. Drop it now rather than hold
         // a copy of whatever was on screen until the next recording starts.
+        //
+        // Deliberately NOT inside `CleanupPlan.make`: the prewarm path builds
+        // the same plan while the user is still speaking, and clearing it there
+        // would leave this call ranking against an empty screen — a different
+        // prompt and a silently broken feature, not merely a missed cache.
         screenTextSnapshot = ""
-        let corrections = TranscriptTidier.CorrectionMapping.parse(wordCorrections)
-        // The writing context for wherever this dictation lands, resolved from
-        // the context captured at recording time. Drives both the formality
-        // dial and casual-chat punctuation lightening.
-        let writingContext = AppWritingContext.classify(
-            appName: context.appName,
-            bundleIdentifier: context.bundleIdentifier,
-            windowTitle: context.windowTitle
-        )
-        // One profile decides everything that varies by destination app.
-        let profile = profiles.profile(for: writingContext)
-        // Code and terminal apps stay exempt from the register dial.
-        let formality = writingContext == .codeOrTerminal ? .balanced : profile.formality
+        let vocabulary = plan.vocabulary
+        let corrections = plan.corrections
+        let writingContext = plan.writingContext
+        let profile = plan.profile
+        let formality = plan.formality
         // Deterministic finishing touches on the cleaned text, in order:
         //   - laughter written apart is joined back up ("ha ha" -> "haha")
         //   - a spoken emoji description becomes the emoji
@@ -3428,25 +3435,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
         }
 
         do {
-            let request = SmartCleanupRequest(
-                transcript: cleanupInput,
-                appName: context.appName,
-                bundleIdentifier: context.bundleIdentifier,
-                windowTitle: context.windowTitle,
-                selectedText: context.selectedText,
-                textBeforeCaret: context.textBeforeCaret,
-                contextSummary: context.contextSummary,
-                vocabulary: vocabulary,
-                corrections: corrections.map {
-                    SmartCleanupRequest.Correction(heard: $0.spoken, written: $0.replacement)
-                },
-                outputLanguage: outputLanguage,
-                customInstructions: [customSystemPrompt, customContextPrompt]
-                    .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
-                    .joined(separator: "\n"),
-                formality: formality,
-                allowStructure: profile.lists
-            )
+            let request = plan.request(transcript: cleanupInput)
             let result = try await AppleFoundationModelsPostProcessor.shared.cleanup(
                 request,
                 sessionID: smartSessionID,

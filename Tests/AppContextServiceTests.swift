@@ -12,6 +12,7 @@ struct AppContextServiceTests {
         testMarkdownSurfaceDetection()
         testCleanupPromptUsesLocalAppStyle()
         testPromptPrefixIsAnExactPrefix()
+        testPrewarmAndStopTimePrefixesAgree()
         testCleanupPromptIncludesTextBeforeCaret()
         testCaretContextCaseHarmonization()
         testCaretContextRepetitionStripping()
@@ -739,6 +740,44 @@ struct AppContextServiceTests {
             expect(
                 full == prefix + request.transcript + "\n</transcript>",
                 "prompt is not prefix + transcript for \"\(request.appName)\""
+            )
+        }
+    }
+
+    /// The drift guarantee. The prewarm path builds its request from the same
+    /// `CleanupPlan` with an empty transcript; the stop path uses the real one.
+    /// If those two ever produce different prefixes the prefill silently never
+    /// hits, and nothing else in the system would say so.
+    private static func testPrewarmAndStopTimePrefixesAgree() {
+        let plan = CleanupPlan.make(
+            context: AppContext(
+                appName: "Slack",
+                bundleIdentifier: "com.tinyspeck.slackmacgap",
+                windowTitle: "#project-updates",
+                selectedText: nil,
+                textBeforeCaret: "I think we should",
+                currentActivity: "You are dictating a chat message."
+            ),
+            customVocabulary: "Claude Code, n8n, LedgerIQ",
+            screenText: "the LedgerIQ migration and the n8n webhook",
+            wordCorrections: "cloud code -> Claude Code",
+            customSystemPrompt: "Keep it terse.",
+            customContextPrompt: "",
+            outputLanguage: "",
+            profiles: .standard
+        )
+        let prewarmPrefix = AppleFoundationModelsPostProcessor.cleanupPromptPrefix(
+            for: plan.request(transcript: "")
+        )
+        for transcript in ["", "ship it on wednesday", "a much longer dictation that says rather more than the others do"] {
+            let request = plan.request(transcript: transcript)
+            expect(
+                AppleFoundationModelsPostProcessor.cleanupPromptPrefix(for: request) == prewarmPrefix,
+                "the prefix moved with the transcript, so prewarming it can never hit"
+            )
+            expect(
+                AppleFoundationModelsPostProcessor.cleanupPrompt(for: request).hasPrefix(prewarmPrefix),
+                "the real prompt does not start with the prewarmed prefix"
             )
         }
     }
