@@ -3241,6 +3241,19 @@ final class AppState: ObservableObject, @unchecked Sendable {
             if profile.emoji {
                 t = SpokenEmoji.substitute(t)
             }
+            // Join a spoken email address. The model does this inconsistently —
+            // "send it to hello at doubleclick dot ai" assembles, anything after
+            // "my email is…" does not — so the rule lives in code.
+            //
+            // `finishText` ONLY, deliberately breaking the pattern the laughter
+            // and emoji passes follow. Those also run on the cleanup input
+            // because the model deletes their trigger tokens; this one must not,
+            // because `word_corrections` entries target the *spoken* form. A
+            // rule like "marek hay okonkwo at kestrel.dev -> marekokonkwo@kestrel.dev"
+            // could never match again if the " at " had already become "@".
+            // Corrections are re-applied immediately before this call, so by
+            // here the spoken forms are gone and only unmatched addresses remain.
+            t = SpokenEmailAddress.assemble(t)
             // Repair a name against what is on screen. Deterministic because
             // neither of the two obvious routes works on this OS: contextual
             // strings do not reach the recogniser, and telling the cleanup
