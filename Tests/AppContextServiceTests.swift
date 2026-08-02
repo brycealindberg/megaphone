@@ -40,6 +40,7 @@ struct AppContextServiceTests {
         LaughterSpellingTests.run()
         SpokenEmojiTests.run()
         SpokenEmailAddressTests.run()
+        SpokenMoneyTests.run()
         ScreenVocabularyTests.run()
         SpokenNameRepairTests.run()
         DictationQualityTests.run()

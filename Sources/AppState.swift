@@ -3254,6 +3254,12 @@ final class AppState: ObservableObject, @unchecked Sendable {
             // Corrections are re-applied immediately before this call, so by
             // here the spoken forms are gone and only unmatched addresses remain.
             t = SpokenEmailAddress.assemble(t)
+            // Write a spoken amount as a figure. Same reason and same placement
+            // as the address pass: measured on 28 real transcripts carrying an
+            // explicit currency word, the cleanup model formatted 6 and left 22.
+            // Only "dollars"/"bucks" trigger it — a bare "k" is ambiguous
+            // ("145k followers") and stays with the model, which has the context.
+            t = SpokenMoney.format(t)
             // Repair a name against what is on screen. Deterministic because
             // neither of the two obvious routes works on this OS: contextual
             // strings do not reach the recogniser, and telling the cleanup
