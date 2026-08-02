@@ -11,6 +11,29 @@ enum SmartCleanupValidationTests {
         testSelectionTransformsAreUnaffected()
         testAnsweredInsteadOfCleanedIsRejected()
         testTheSpeakersOwnOpeningIsNotAPreamble()
+        testEchoedPromptIsRejected()
+    }
+
+    /// The model sometimes returns the hint block it was given instead of the
+    /// transcript. Measured over 693 replayed dictations: 3 leaked the prompt and
+    /// 2 were accepted — ~1,000 characters of Megaphone's own instructions, about
+    /// to be pasted into a Slack channel. They clear the expansion ceiling by a
+    /// hair, which is why length alone cannot catch this.
+    private static func testEchoedPromptIsRejected() {
+        let leak = """
+        **Destination app:** Slack
+        **Writing context:** Work chat
+        **App-aware cleanup:** Use concise, professional chat formatting. Preserve the \
+        speaker's tone and do not make the message more formal unless asked.
+        """
+        expectRejected(leak, source: "In the video generation from the keyframes in our app some of the movement during the videos of either people or backgrounds is choppy and I want to fix it")
+        // The labels are shared with the prompt builder, so each one is checked.
+        for label in AppleFoundationModelsPostProcessor.promptSectionLabels {
+            expectRejected("\(label) Slack", source: "ship the build tonight")
+        }
+        // Someone genuinely dictating the phrase keeps it.
+        expectAccepted("The writing context: work chat, like we discussed.",
+                       source: "the writing context work chat like we discussed")
     }
 
     /// The assistant-preamble list was rejecting people for talking normally.
@@ -59,6 +82,13 @@ enum SmartCleanupValidationTests {
                        source: "Hey brother my bad I was feeling sick")
         expectAccepted("Hey Sam, here's a little update video.",
                        source: "Hey Sam here's a little update video hope you're doing well")
+        // An INLINE greeting is one spurious word on an otherwise good cleanup.
+        // Rejecting it would cost the punctuation and capitalisation that basic
+        // tidy does not do — the worse trade. Measured 4 of 693.
+        expectAccepted("Hey, I'm free this weekend if you want to grab a coffee, I'd love that.",
+                       source: "Yeah I'm free this weekend if you want to get a coffee I would love that.")
+        expectAccepted("Hey Morgan, how's the week going for you?",
+                       source: "yo morgan how's this week looking for you")
         // Ordinary text that merely mentions a bracket is not scaffolding.
         expectAccepted("Put the value in [brackets] like that.",
                        source: "put the value in brackets like that")
