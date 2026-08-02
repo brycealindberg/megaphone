@@ -11,6 +11,7 @@ struct AppContextServiceTests {
         testAppWritingContextClassification()
         testMarkdownSurfaceDetection()
         testCleanupPromptUsesLocalAppStyle()
+        testPromptPrefixIsAnExactPrefix()
         testCleanupPromptIncludesTextBeforeCaret()
         testCaretContextCaseHarmonization()
         testCaretContextRepetitionStripping()
@@ -696,6 +697,50 @@ struct AppContextServiceTests {
 
     private static func expectEqual(_ actual: String?, _ expected: String, file: StaticString = #file, line: UInt = #line) {
         expect(actual == expected, "Expected \(expected.debugDescription), got \((actual ?? "nil").debugDescription)", file: file, line: line)
+    }
+
+    /// The prewarm prefix must be an exact prefix of the prompt actually sent,
+    /// or prefilling it is wasted work at best and a different prompt at worst.
+    /// This is the entire safety argument for `prewarmPrompt`.
+    private static func testPromptPrefixIsAnExactPrefix() {
+        let variants: [SmartCleanupRequest] = [
+            SmartCleanupRequest(
+                transcript: "ship the release on wednesday",
+                appName: "Slack", bundleIdentifier: "com.tinyspeck.slackmacgap",
+                windowTitle: "#project-updates", selectedText: nil, textBeforeCaret: nil,
+                contextSummary: "You are dictating a chat message.",
+                vocabulary: ["Claude Code", "n8n"],
+                corrections: [SmartCleanupRequest.Correction(heard: "cloud code", written: "Claude Code")],
+                outputLanguage: "", customInstructions: "",
+                formality: .casual, allowStructure: false
+            ),
+            SmartCleanupRequest(
+                transcript: "and then check the json output",
+                appName: "Ghostty", bundleIdentifier: "com.mitchellh.ghostty",
+                windowTitle: "", selectedText: "some selection", textBeforeCaret: "I think we should",
+                contextSummary: "You are dictating into a terminal.",
+                vocabulary: [], corrections: [], outputLanguage: "German",
+                customInstructions: "Keep it terse.",
+                formality: .formal, allowStructure: true
+            ),
+            SmartCleanupRequest(
+                transcript: "", appName: "", bundleIdentifier: "", windowTitle: "",
+                selectedText: nil, textBeforeCaret: nil, contextSummary: "",
+                vocabulary: [], corrections: [], outputLanguage: "", customInstructions: "",
+                formality: .balanced, allowStructure: false
+            ),
+        ]
+        for request in variants {
+            let full = AppleFoundationModelsPostProcessor.cleanupPrompt(for: request)
+            let prefix = AppleFoundationModelsPostProcessor.cleanupPromptPrefix(for: request)
+            expect(full.hasPrefix(prefix), "prefix is not a prefix of the prompt for \"\(request.appName)\"")
+            expect(!prefix.isEmpty, "prefix was empty for \"\(request.appName)\"")
+            // The only thing missing from the prefix is the transcript block.
+            expect(
+                full == prefix + request.transcript + "\n</transcript>",
+                "prompt is not prefix + transcript for \"\(request.appName)\""
+            )
+        }
     }
 
     private static func expect(_ condition: Bool, _ message: String, file: StaticString = #file, line: UInt = #line) {
