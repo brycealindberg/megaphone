@@ -127,12 +127,55 @@ enum SpokenEmoji {
     /// can reach. Greedy, it would happily treat an earlier "emoji" as one of
     /// the name words and swallow it: "fire emoji and rocket emoji" matched as
     /// a single phrase, and only the rocket came out.
+    /// Name words are separated by whitespace only — never a comma.
+    ///
+    /// Tried 2026-08-01 and reverted: allowing a comma would let the recogniser's
+    /// "Sounds good thumbs up, emoji, see you tomorrow." resolve, which it
+    /// currently does not. But it also turns the ordinary sentence "that's sad,
+    /// emoji" into "that's 😢", because "sad" is an alias. A comma before the
+    /// trigger is genuinely ambiguous between a spoken name and a sentence that
+    /// merely ends near the word, and silently rewriting real prose is the worse
+    /// failure. `testDoesNotReachPastPunctuation` guards this.
     private static let phrasePattern =
         #"(?<![\p{L}\p{M}\p{N}_])((?:[\p{L}\p{N}'’-]+[ \t]+){0,6}?)(emojis?)(?![\p{L}\p{M}\p{N}_])"#
 
     private static let wordPattern = #"[\p{L}\p{N}'’-]+"#
 
     static func substitute(_ text: String) -> String {
+        // Two steps, because they have different triggers. The phrase swap needs
+        // the spoken word "emoji" to still be present; the punctuation tidy needs
+        // only a glyph, so it also runs on the model's output where the trigger
+        // word is long gone.
+        tidyPunctuation(around: replacePhrases(in: text))
+    }
+
+    /// Strips the punctuation the recogniser hangs off a spoken emoji name.
+    ///
+    /// "thanks so much folded hands emoji" comes back from the recogniser as
+    /// "Thanks so much, folded hands emoji." — it heard the pause before the
+    /// name as a comma and closed the sentence after it. Replacing only the
+    /// words left both marks stranded against the glyph: "Thanks so much, 🙏."
+    /// Neither mark is punctuation the speaker asked for.
+    ///
+    /// A trailing mark is only removed at the very end of the text. Mid-sentence
+    /// ("sounds good 👍, see you tomorrow") the comma is real and stays, and "!"
+    /// and "?" are never removed anywhere because they carry meaning.
+    static func tidyPunctuation(around text: String) -> String {
+        guard text.unicodeScalars.contains(where: { $0.properties.isEmojiPresentation })
+        else { return text }
+        var result = text
+        for (pattern, template) in [
+            (#"[ \t]*,[ \t]*(?=\p{Extended_Pictographic})"#, " "),
+            (#"(\p{Extended_Pictographic})[ \t]*[.,]+[ \t]*$"#, "$1"),
+        ] {
+            result = result.replacingOccurrences(
+                of: pattern, with: template, options: .regularExpression
+            )
+        }
+        return result
+    }
+
+    private static func replacePhrases(in text: String) -> String {
         // Cheap exit for the overwhelmingly common case of a dictation that
         // never says "emoji" at all.
         guard text.range(

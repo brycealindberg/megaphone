@@ -14,6 +14,7 @@ enum SpokenEmojiTests {
         testDoesNotReachPastPunctuation()
         testNeverResolvesANonEmojiCharacter()
         testEveryAliasResolves()
+        testPunctuationIsNotStrandedAgainstTheGlyph()
     }
 
     /// The reported case: say the description, get the emoji.
@@ -59,7 +60,11 @@ enum SpokenEmojiTests {
 
     private static func testKeepsSurroundingTextAndPunctuation() {
         expect(SpokenEmoji.substitute("that's so funny laughing face emoji"), "that's so funny 😂")
-        expect(SpokenEmoji.substitute("laughing face emoji."), "😂.")
+        // Changed 2026-08-01: this asserted "😂." — keeping the full stop the
+        // recogniser put after the spoken name. Bryce reported that as a defect
+        // and the real pipeline confirmed it, so a trailing "." or "," at the end
+        // of the text is now absorbed. "!" and "?" still survive, below.
+        expect(SpokenEmoji.substitute("laughing face emoji."), "😂")
         expect(SpokenEmoji.substitute("fire emoji that build shipped"), "🔥 that build shipped")
         expect(SpokenEmoji.substitute("nice work party popper emoji!"), "nice work 🎉!")
     }
@@ -120,4 +125,32 @@ enum SpokenEmojiTests {
             fatalError("SpokenEmoji: \(message)")
         }
     }
+
+    /// The recogniser hears the pause before a spoken emoji name as a comma and
+    /// closes the sentence after it, so replacing only the words left both marks
+    /// stranded: "thanks so much folded hands emoji" became "Thanks so much, 🙏."
+    /// Measured on real synthesized audio through the real recogniser.
+    private static func testPunctuationIsNotStrandedAgainstTheGlyph() {
+        expect(SpokenEmoji.substitute("Thanks so much, folded hands emoji.") == "Thanks so much 🙏",
+               SpokenEmoji.substitute("Thanks so much, folded hands emoji."))
+        expect(SpokenEmoji.substitute("That is hilarious laughing face emoji.") == "That is hilarious 😂",
+               SpokenEmoji.substitute("That is hilarious laughing face emoji."))
+
+        // It also runs on the model's output, where the trigger word is gone.
+        expect(SpokenEmoji.substitute("Let's go 🚀.") == "Let's go 🚀",
+               SpokenEmoji.substitute("Let's go 🚀."))
+
+        // Mid-sentence punctuation is real and stays; "!" and "?" always stay.
+        expect(SpokenEmoji.substitute("Sounds good 👍, see you tomorrow") == "Sounds good 👍, see you tomorrow",
+               SpokenEmoji.substitute("Sounds good 👍, see you tomorrow"))
+        expect(SpokenEmoji.substitute("Are you serious 😂?") == "Are you serious 😂?",
+               SpokenEmoji.substitute("Are you serious 😂?"))
+        expect(SpokenEmoji.substitute("Let's go 🚀!") == "Let's go 🚀!",
+               SpokenEmoji.substitute("Let's go 🚀!"))
+
+        // Text with no emoji at all is untouched, including its punctuation.
+        expect(SpokenEmoji.substitute("Thanks so much, see you tomorrow.") == "Thanks so much, see you tomorrow.",
+               SpokenEmoji.substitute("Thanks so much, see you tomorrow."))
+    }
+
 }

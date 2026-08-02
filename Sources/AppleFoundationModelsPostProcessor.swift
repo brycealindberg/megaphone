@@ -1019,6 +1019,18 @@ actor AppleFoundationModelsPostProcessor {
             if let word = dropped.sorted().first {
                 throw SmartCleanupError.invalidOutput("dropped the spoken word \"\(word)\"")
             }
+            // An emoji only ever reaches the model because `SpokenEmoji` put it
+            // there, which only happens because the speaker said "emoji" out
+            // loud — so it is as deliberate as anything in the transcript, and
+            // the same rule as the words above applies. Measured on the real
+            // pipeline: of five spoken-emoji dictations the model silently
+            // deleted the glyph in two ("Thanks so much, 🙏." came back as
+            // "Thanks so much."), and the post-model `SpokenEmoji` pass cannot
+            // put it back because the trigger words are already consumed.
+            let lostGlyphs = Self.emojiGlyphs(source).subtracting(Self.emojiGlyphs(output))
+            if let glyph = lostGlyphs.sorted().first {
+                throw SmartCleanupError.invalidOutput("dropped the spoken emoji \"\(glyph)\"")
+            }
         }
         // A short line sometimes comes back restated as its own list: "deploy is green ✅"
         // returned as itself plus "- Deploy is green ✅". Nothing was dropped and the
@@ -1057,6 +1069,17 @@ actor AppleFoundationModelsPostProcessor {
     /// Words the model must never silently delete. The system prompt already tells it to
     /// preserve profanity, but the on-device model drops or paraphrases around these anyway;
     /// this enforces that contract so the transcript falls back to basic cleanup instead.
+    /// Every emoji grapheme in the text. Presentation-form only, so ordinary
+    /// characters that happen to carry an emoji property (digits, `#`, `©`)
+    /// are not mistaken for one.
+    static func emojiGlyphs(_ text: String) -> Set<String> {
+        Set(
+            text.map(String.init).filter { character in
+                character.unicodeScalars.contains { $0.properties.isEmojiPresentation }
+            }
+        )
+    }
+
     private static let mustPreserveTerms: Set<String> = [
         "fuck", "fucks", "fucked", "fucker", "fuckers", "fucking",
         "shit", "shits", "shitty", "bullshit", "damn", "goddamn", "damned",
