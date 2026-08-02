@@ -9,6 +9,62 @@ enum SmartCleanupValidationTests {
         testRepeatedLineIsRejected()
         testBlockMarkdownIsRejected()
         testSelectionTransformsAreUnaffected()
+        testAnsweredInsteadOfCleanedIsRejected()
+        testTheSpeakersOwnOpeningIsNotAPreamble()
+    }
+
+    /// The assistant-preamble list was rejecting people for talking normally.
+    /// Measured over 9,401 real dictations: 49 open with one of these phrases
+    /// and every one was being downgraded to basic cleanup — which does not
+    /// punctuate or capitalise — for no reason.
+    private static func testTheSpeakersOwnOpeningIsNotAPreamble() {
+        for (output, source) in [
+            ("Here's the file on the concept and the scope of this project.",
+             "Here's the file on the concept and the scope of this project"),
+            ("I can't click View report. Please fix it using superpowers.",
+             "I can't click view report. Please fix it using super powers"),
+            ("Sure, we raise prices by 30%.", "Sure we raise prices by 30 percent."),
+            ("Here is the context you need.", "Here is the context you need."),
+            ("I'm sorry, I missed that.", "I'm sorry I missed that"),
+        ] {
+            expectAccepted(output, source: source)
+        }
+        // And the guard still catches a real preamble in front of text the
+        // speaker did not open that way.
+        expectRejected("Here's the cleaned transcript: ship the build tonight.",
+                       source: "ship the build tonight")
+        expectRejected("Certainly! I can help with that.", source: "what time is the standup")
+        expectRejected("I'm sorry, I can't help with that.", source: "add milk to the list")
+    }
+
+    /// The model sometimes reads a rambling message as a request to WRITE one
+    /// and returns an email instead of a tidied transcript. Both cases below are
+    /// real outputs from replaying 140 dictations through the Slack profile, and
+    /// both are shorter than their source — so the expansion ceiling and the
+    /// dropped-most-of-it floor each let them through.
+    private static func testAnsweredInsteadOfCleanedIsRejected() {
+        expectRejected(
+            "Hey team,\n\nI've got the checklist ready. Let's use it to stay on track and avoid unnecessary back-and-forth.\n\nBest,\n[Your Name]",
+            source: "Yeah bro it's the same as before in what you would get once it's done. Yeah, just getting the checklist so we know and have a goal to complete instead of just going back and forth like we have been pretty much."
+        )
+        expectRejected(
+            "Hey team,\n\nI've created a tool for ad generation for businesses. Would love to chat with anyone who wants to help close some deals.",
+            source: "also guys I made this for ad generating for businesses would love to talk with some you if anyone wants to help close some deals on this already have it built out so just let me know"
+        )
+        // A greeting the speaker DID say survives being tidied, including when
+        // the model changes its punctuation or the following words.
+        expectAccepted("Hi Dana,\n\nThank you for the information. I just booked a call for Monday.",
+                       source: "Hi Dana of course thank you too for the information I just booked a call for Monday")
+        expectAccepted("Hey brother, my bad. I was feeling sick.",
+                       source: "Hey brother my bad I was feeling sick")
+        expectAccepted("Hey Sam, here's a little update video.",
+                       source: "Hey Sam here's a little update video hope you're doing well")
+        // Ordinary text that merely mentions a bracket is not scaffolding.
+        expectAccepted("Put the value in [brackets] like that.",
+                       source: "put the value in brackets like that")
+        // Selection transforms may legitimately produce either.
+        expectAccepted("Hey team,\n\nHere is the update.\n\nBest,\n[Your Name]",
+                       source: "write a short email to the team", allowsExpansion: true)
     }
 
     /// The on-device model sometimes truncates at, or paraphrases around, profanity even

@@ -1032,8 +1032,22 @@ actor AppleFoundationModelsPostProcessor {
             "here is", "here's", "certainly", "sure,", "i'm sorry", "i am sorry",
             "as an ai", "i can't", "i cannot"
         ]
-        if rejectedPrefixes.contains(where: { lower.hasPrefix($0) }) {
-            throw SmartCleanupError.invalidOutput("assistant-style response")
+        if let prefix = rejectedPrefixes.first(where: { lower.hasPrefix($0) }) {
+            // The model echoing the speaker's OWN opening is not a preamble.
+            // Measured over 9,401 real dictations: 49 open this way — "Here's
+            // the file on the concept and the scope", "I can't click view
+            // report", "Sure, we raise prices by 30 percent" — and every one was
+            // being thrown away and re-done as basic cleanup, which does not
+            // punctuate or capitalise. Nothing was wrong with any of them.
+            //
+            // The guard still does its job: "Here's the cleaned transcript:"
+            // in front of something the speaker did not open that way is
+            // rejected exactly as before.
+            let opener = prefix.trimmingCharacters(in: CharacterSet(charactersIn: ", "))
+            let spoken = source.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+            if !spoken.hasPrefix(opener) {
+                throw SmartCleanupError.invalidOutput("assistant-style response")
+            }
         }
         let sourceCount = max(source.count, 1)
         if !allowsExpansion && output.count > max(sourceCount * 2, sourceCount + 200) {
@@ -1060,6 +1074,40 @@ actor AppleFoundationModelsPostProcessor {
             let lostGlyphs = Self.emojiGlyphs(source).subtracting(Self.emojiGlyphs(output))
             if let glyph = lostGlyphs.sorted().first {
                 throw SmartCleanupError.invalidOutput("dropped the spoken emoji \"\(glyph)\"")
+            }
+        }
+        // Sometimes the model stops cleaning the transcript up and starts
+        // answering it — it reads a rambling Slack message as a request to
+        // write an email and returns one, greeting and sign-off included.
+        // Measured over 140 real dictations replayed through this pipeline with
+        // the Slack profile: 2 came back opening "Hey team," that the speaker
+        // never said, and one of those ended "Best,\n[Your Name]".
+        //
+        // Neither existing guard notices, because the rewrite is SHORTER than
+        // the transcript — "Yeah bro it's the same as before…" (208 chars) came
+        // back as 125 — so it clears both the expansion ceiling and the
+        // dropped-most-of-it floor while losing the entire message.
+        if !allowsExpansion {
+            // A bracketed placeholder is template scaffolding, never speech.
+            // Across all 9,401 dictations in the reference corpus, zero contain
+            // one — neither the raw transcript nor any cleaned output — so this
+            // has no measured false positive.
+            if let range = output.range(
+                of: #"\[\s*(your |the |insert |client|company|name|date|link|url|topic|product)[^\]]{0,30}\]"#,
+                options: [.regularExpression, .caseInsensitive]
+            ) {
+                throw SmartCleanupError.invalidOutput("wrote the placeholder \"\(output[range])\"")
+            }
+            // A salutation the speaker never uttered. Compared as a word against
+            // the whole source rather than positionally, so "Hi Dana of course
+            // thank you" tidied to "Hi Dana," is untouched — it only fires when
+            // the greeting is the model's own invention.
+            let sourceWords = Self.words(source)
+            let opening = output.drop(while: { !($0.isLetter || $0.isNumber) })
+                .prefix(while: \.isLetter).lowercased()
+            if ["hey", "hi", "hello", "dear", "greetings"].contains(opening),
+               !sourceWords.contains(opening) {
+                throw SmartCleanupError.invalidOutput("added the greeting \"\(opening)\"")
             }
         }
         // A short line sometimes comes back restated as its own list: "deploy is green ✅"
@@ -1096,9 +1144,6 @@ actor AppleFoundationModelsPostProcessor {
         }
     }
 
-    /// Words the model must never silently delete. The system prompt already tells it to
-    /// preserve profanity, but the on-device model drops or paraphrases around these anyway;
-    /// this enforces that contract so the transcript falls back to basic cleanup instead.
     /// Every emoji grapheme in the text. Shares `SpokenEmoji.isEmoji` so the
     /// preservation guard and the punctuation tidy agree on what an emoji is —
     /// they disagreed at first, and the guard silently ignored ❤️ and every
@@ -1107,6 +1152,9 @@ actor AppleFoundationModelsPostProcessor {
         Set(text.filter(SpokenEmoji.isEmoji).map(String.init))
     }
 
+    /// Words the model must never silently delete. The system prompt already tells it to
+    /// preserve profanity, but the on-device model drops or paraphrases around these anyway;
+    /// this enforces that contract so the transcript falls back to basic cleanup instead.
     private static let mustPreserveTerms: Set<String> = [
         "fuck", "fucks", "fucked", "fucker", "fuckers", "fucking",
         "shit", "shits", "shitty", "bullshit", "damn", "goddamn", "damned",
