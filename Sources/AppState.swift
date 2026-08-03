@@ -778,6 +778,13 @@ final class AppState: ObservableObject, @unchecked Sendable {
     /// perfectly valid settled value.
     private var screenVocabularySettled = false
 
+    /// Bumped once per streaming session. The screen read is an unstructured
+    /// detached task that outlives the session that started it — cancelling a
+    /// recording does not cancel the read — so the publish is gated on this
+    /// instead of on `Task.isCancelled`, which is only ever set by the read's
+    /// own 1.2s timeout.
+    private var screenVocabularyGeneration: UInt64 = 0
+
 
     @Published var isRecording = false {
         didSet {
@@ -3723,6 +3730,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
                         self.debugStatusMessage = "Done"
                         let completionStatusText = self.preserveClipboard ? "Pasted at cursor!" : "Copied to clipboard!"
                         let enterOnlyStatusText = "Pressed Enter"
+                        let replacementFailedStatusText = "Couldn't replace"
                         let shouldPressEnterAfterPaste = parsedTranscript.shouldPressEnterAfterPaste
 
                         let shouldPersistRawDictationFallback: Bool
@@ -3757,9 +3765,48 @@ final class AppState: ObservableObject, @unchecked Sendable {
                             let pendingClipboardRestore = self.writeTranscriptToPasteboard(trimmedFinalTranscript)
                             self.pasteAtCursorWhenShortcutReleased(performPaste: false) {
                                 if let replacementTarget = result.replacementTarget {
-                                    _ = self.contextService.selectTextImmediatelyBeforeCaret(
+                                    guard self.contextService.selectTextImmediatelyBeforeCaret(
                                         matching: replacementTarget
-                                    )
+                                    ) else {
+                                        // Nothing was selected, so pasting would append the
+                                        // rewrite *after* the text it was meant to replace and
+                                        // the user would see the sentence twice. Leave the
+                                        // document alone, exactly as the revert path does.
+                                        self.restoreClipboardIfNeeded(pendingClipboardRestore)
+                                        // History and edit observation were both committed
+                                        // before this closure was scheduled, on the assumption
+                                        // the rewrite would land. It did not. The run log keeps
+                                        // its entry — that pipeline run genuinely happened — but
+                                        // nothing may now treat the text as present in the
+                                        // document: a read-back would diff against text that was
+                                        // never inserted, and a wake command must not target it.
+                                        //
+                                        // The cutoff is in-memory, so relaunching inside the
+                                        // wake-command window surfaces the entry again. That stays
+                                        // safe because the selection verifies the text against what
+                                        // is actually before the caret and fails closed; closing it
+                                        // properly needs a persisted delivery state on the history
+                                        // entry, which is a schema change, not a wider rollback here.
+                                        self.pendingEditObservation = nil
+                                        self.previousDictationInvalidatedAt = Date()
+                                        // An update reminder may have installed a dismiss token
+                                        // whose timer would otherwise close this error early.
+                                        self.clearPendingOverlayDismissToken()
+                                        // The status was set to the success text before this
+                                        // closure was scheduled, and its reset only fires while
+                                        // that text is still showing — so correct it here and
+                                        // give it its own reset, or it would read "Pasted at
+                                        // cursor!" over an error and then stick.
+                                        self.statusText = replacementFailedStatusText
+                                        self.scheduleReadyStatusReset(
+                                            after: 3,
+                                            matching: [replacementFailedStatusText]
+                                        )
+                                        self.overlayManager.showError(
+                                            "Couldn't replace: the previous dictation is no longer at the cursor."
+                                        )
+                                        return
+                                    }
                                 }
                                 self.pasteAtCursor()
                                 if shouldPressEnterAfterPaste {
@@ -3972,6 +4019,8 @@ final class AppState: ObservableObject, @unchecked Sendable {
     private func startNativeStreamingSession() {
         screenVocabularyTerms = []
         screenTextSnapshot = ""
+        screenVocabularyGeneration &+= 1
+        let vocabularyGeneration = screenVocabularyGeneration
         let dictionaryTerms = SpeechAnalyzerService.splitVocabulary(speechRecognitionVocabulary)
         let wantsScreenVocabulary = screenVocabularyEnabled
         // Nothing to wait for when the feature is off, so the prewarm join
@@ -4004,7 +4053,17 @@ final class AppState: ObservableObject, @unchecked Sendable {
                     "screen vocabulary: %{public}d chars of window text -> %{public}d terms [%{public}@]",
                     screenText?.count ?? -1, terms.count, terms.prefix(8).joined(separator: ", ")
                 )
+                // Once the caller's timeout has won it has already substituted
+                // [], so late terms are outside the budget either way.
+                guard !Task.isCancelled else { return [] }
                 await MainActor.run {
+                    // Checked *inside* the hop, not before it: this task can be
+                    // waiting to enter the MainActor while the next recording
+                    // starts, and publishing then would overwrite that session's
+                    // freshly reset vocabulary with the previous window's text.
+                    // Leaving `screenVocabularySettled` false only skips the
+                    // prompt prewarm, an optimisation, never a correctness gate.
+                    guard self?.screenVocabularyGeneration == vocabularyGeneration else { return }
                     self?.screenVocabularyTerms = terms
                     self?.screenTextSnapshot = screenText ?? ""
                     self?.screenVocabularySettled = true

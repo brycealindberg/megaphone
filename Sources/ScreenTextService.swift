@@ -71,7 +71,11 @@ final class ScreenTextService {
         pieces: inout [String],
         seen: inout Set<String>
     ) {
-        guard depth <= Self.maxDepth, visits <= Self.maxElementVisits, budget > 0 else { return }
+        // Every read below is synchronous IPC into another process, so an
+        // unresponsive app makes this walk arbitrarily slow. Callers abandon the
+        // wait after a timeout and cancel this task; without this check the walk
+        // keeps issuing messages into the hung app long after nobody is listening.
+        guard !Task.isCancelled, depth <= Self.maxDepth, visits <= Self.maxElementVisits, budget > 0 else { return }
         visits += 1
 
         let role = string(of: element, attribute: kAXRoleAttribute as CFString) ?? ""
