@@ -3202,6 +3202,12 @@ final class AppState: ObservableObject, @unchecked Sendable {
             return ("", .skippedEmptyRawTranscript, "", nil)
         }
 
+        // Measured live at 81-92% of the whole stop-to-paste budget, against
+        // ~19 ms for the entire audio teardown — so this is the only segment
+        // worth splitting further. Its own clock: the caller's marks already
+        // give the total, and what is missing is the shape inside it.
+        var marks = LatencyMarks()
+
         let plan = CleanupPlan.make(
             context: context,
             customVocabulary: customVocabulary,
@@ -3212,6 +3218,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
             outputLanguage: outputLanguage,
             profiles: profiles
         )
+        marks.mark("cleanup: plan built")
         // The window's text has done its one job. Drop it now rather than hold
         // a copy of whatever was on screen until the next recording starts.
         //
@@ -3468,18 +3475,25 @@ final class AppState: ObservableObject, @unchecked Sendable {
 
         do {
             let request = plan.request(transcript: cleanupInput)
+            // Everything between "plan built" and here is the pre-model work:
+            // wake-command matching, macro and exact-mode checks, the
+            // deterministic tidy, and assembling the request itself.
+            marks.mark("cleanup: request ready", chars: request.prompt.count)
             let result = try await AppleFoundationModelsPostProcessor.shared.cleanup(
                 request,
                 sessionID: smartSessionID,
                 timeout: trimmedRawTranscript.count > 500 ? 4 : 2.5
             )
+            marks.mark("cleanup: model returned")
             // The model is only *told* about the corrections, so it applies them
             // inconsistently. Re-apply them to its output so a correction is a
             // guarantee in Smart mode too, not a suggestion. Idempotent: where
             // the model already substituted, the spoken form is gone and this
             // matches nothing.
             let corrected = TranscriptTidier.apply(corrections: corrections, to: result.text)
-            return (finishText(corrected), .smartCleanupSucceeded(elapsed: result.elapsed), result.prompt, nil)
+            let finished = finishText(corrected)
+            marks.mark("cleanup: text finished")
+            return (finished, .smartCleanupSucceeded(elapsed: result.elapsed), result.prompt, nil)
         } catch {
             os_log(.error, log: recordingLog, "On-device smart cleanup failed: %{public}@", error.localizedDescription)
             return (finishText(safeFallback), .smartCleanupFallback(reason: error.localizedDescription), "", nil)
@@ -4515,6 +4529,20 @@ final class AppState: ObservableObject, @unchecked Sendable {
             last = now
             os_log(.default, log: recordingLog, "latency %{public}@ +%.1f ms (%.1f ms total)",
                    String(describing: label), step, total)
+        }
+
+        /// Same, plus a size. The cleanup prompt is the one input whose length
+        /// is known to move latency (~+200 ms per 1,000 chars even prewarmed),
+        /// so the number has to be on the same line as the timing or the two
+        /// get correlated by eye across separate log streams.
+        mutating func mark(_ label: StaticString, chars: Int) {
+            guard enabled else { return }
+            let now = ContinuousClock.now
+            let step = Double(last.duration(to: now).components.attoseconds) / 1e15
+            let total = Double(start.duration(to: now).components.attoseconds) / 1e15
+            last = now
+            os_log(.default, log: recordingLog, "latency %{public}@ +%.1f ms (%.1f ms total) [%d chars]",
+                   String(describing: label), step, total, chars)
         }
     }
 
