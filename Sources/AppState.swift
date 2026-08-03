@@ -3478,13 +3478,16 @@ final class AppState: ObservableObject, @unchecked Sendable {
             // Everything between "plan built" and here is the pre-model work:
             // wake-command matching, macro and exact-mode checks, the
             // deterministic tidy, and assembling the request itself.
-            marks.mark("cleanup: request ready", chars: request.prompt.count)
+            marks.mark("cleanup: request ready")
             let result = try await AppleFoundationModelsPostProcessor.shared.cleanup(
                 request,
                 sessionID: smartSessionID,
                 timeout: trimmedRawTranscript.count > 500 ? 4 : 2.5
             )
-            marks.mark("cleanup: model returned")
+            // The assembled prompt only exists on the result, so the size rides
+            // on this mark rather than the one before the call — same line as
+            // the inference timing, which is the point.
+            marks.mark("cleanup: model returned", chars: result.prompt.count)
             // The model is only *told* about the corrections, so it applies them
             // inconsistently. Re-apply them to its output so a correction is a
             // guarantee in Smart mode too, not a suggestion. Idempotent: where
