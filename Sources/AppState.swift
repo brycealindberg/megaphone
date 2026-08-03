@@ -3543,8 +3543,11 @@ final class AppState: ObservableObject, @unchecked Sendable {
         errorMessage = nil
         playStopSound()
         overlayManager.showTranscribing()
+        var marks = LatencyMarks()
+        marks.mark("stop requested")
         audioRecorder.stopRecording { [weak self] fileURL in
             guard let self else { return }
+            marks.mark("recorder stopped")
             guard let fileURL else {
                 self.isTranscribing = false
                 self.tearDownNativeStreamingSession()
@@ -3565,6 +3568,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
             }
 
             let savedAudioFile = Self.saveAudioFile(from: fileURL)
+            marks.mark("audio saved")
             let transcriptionFileURL = savedAudioFile?.fileURL ?? fileURL
             self.transcribingAudioFileName = savedAudioFile?.fileName
             self.statusText = "Transcribing..."
@@ -3597,6 +3601,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
                         fileURL: transcriptionFileURL
                     )
                     let rawTranscript = try await transcript
+                    marks.mark("transcript final")
                     let parsedTranscript = Self.parseTranscriptCommands(
                         from: rawTranscript,
                         pressEnterCommandEnabled: self.isPressEnterVoiceCommandEnabled
@@ -3748,6 +3753,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
                                 }
                             }
 
+                            marks.mark("cleanup done, pasting")
                             let pendingClipboardRestore = self.writeTranscriptToPasteboard(trimmedFinalTranscript)
                             self.pasteAtCursorWhenShortcutReleased(performPaste: false) {
                                 if let replacementTarget = result.replacementTarget {
@@ -4420,10 +4426,53 @@ final class AppState: ObservableObject, @unchecked Sendable {
         }
     }
 
+    /// Stopwatch for the path between releasing the hotkey and seeing text.
+    ///
+    /// Exists because that budget could not be read off the source. The model
+    /// call is measured (median 317 ms), and everything else on the path that
+    /// *could* be measured offline turned out to be noise — one history write is
+    /// 0.68 ms, the WAV copy 0.5 ms. What is left is the block between handing
+    /// stop to the recorder and the analyzer being told to finalize: an
+    /// `AVCaptureSession.stopRunning()`, a sample-queue drain and a main hop,
+    /// during which the recogniser is provably idle. Only the running app can
+    /// size it.
+    ///
+    /// Off unless `defaults write com.kuberwastaken.megaphone latency_marks -bool YES`,
+    /// so it costs nothing normally. Logged at `.default` because `.info` is
+    /// never persisted — a level that only shows up under a live `log stream` is
+    /// no use for something you have to speak into.
+    struct LatencyMarks {
+        private let start = ContinuousClock.now
+        private var last = ContinuousClock.now
+        private let enabled: Bool
+
+        init() { enabled = UserDefaults.standard.bool(forKey: "latency_marks") }
+
+        mutating func mark(_ label: StaticString) {
+            guard enabled else { return }
+            let now = ContinuousClock.now
+            let step = Double(last.duration(to: now).components.attoseconds) / 1e15
+            let total = Double(start.duration(to: now).components.attoseconds) / 1e15
+            last = now
+            os_log(.default, log: recordingLog, "latency %{public}@ +%.1f ms (%.1f ms total)",
+                   String(describing: label), step, total)
+        }
+    }
+
+    /// Poll granularity while waiting for the shortcut to be let go.
+    ///
+    /// This is dead time the user watches, so it is quantization, not work: a
+    /// combo where one key is released before the other pays a whole tick before
+    /// the paste is even scheduled. 8 ms costs a few more no-op runloop hops and
+    /// removes up to 17 ms of that. The overall ceiling is unchanged — attempts
+    /// scale with the interval to keep the same 600 ms bound.
+    private static let shortcutReleasePollInterval: TimeInterval = 0.008
+    private static let shortcutReleasePollCeiling: TimeInterval = 0.6
+
     private func performAfterShortcutReleased(attempt: Int = 0, action: @escaping () -> Void) {
-        let maxAttempts = 24
+        let maxAttempts = Int(Self.shortcutReleasePollCeiling / Self.shortcutReleasePollInterval)
         if hotkeyManager.hasPressedShortcutInputs && attempt < maxAttempts {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.025) { [weak self] in
+            DispatchQueue.main.asyncAfter(deadline: .now() + Self.shortcutReleasePollInterval) { [weak self] in
                 self?.performAfterShortcutReleased(attempt: attempt + 1, action: action)
             }
             return
