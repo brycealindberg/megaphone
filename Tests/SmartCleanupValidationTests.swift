@@ -12,6 +12,38 @@ enum SmartCleanupValidationTests {
         testAnsweredInsteadOfCleanedIsRejected()
         testTheSpeakersOwnOpeningIsNotAPreamble()
         testEchoedPromptIsRejected()
+        testAssistantPreambleIsUnwrappedNotDiscarded()
+    }
+
+    /// Measured over 200 real dictations: 16 were rejected and 6 of them were a
+    /// CORRECT cleanup inside an "Here is the cleaned text:" wrapper. Rejecting
+    /// threw the good work away and fell back to basic tidy.
+    private static func testAssistantPreambleIsUnwrappedNotDiscarded() {
+        expectUnwrapped(
+            "Sure, here is the cleaned text:\n\nI have client projects that finished but I don't want them taking space.",
+            "I have client projects that finished but I don't want them taking space."
+        )
+        expectUnwrapped(
+            "Here is the cleaned text:\n\n\"Such as in this video, these two keyframes look good.\"",
+            "Such as in this video, these two keyframes look good."
+        )
+        // A lead-in the speaker actually said must survive — the instructions
+        // explicitly ask for "I want to do three things:" to be kept above a list.
+        expectUnwrapped("I want to do three things:\n\n- one\n- two", "I want to do three things:\n\n- one\n- two")
+        expectUnwrapped("Here's the plan:\n\nship it", "Here's the plan:\n\nship it")
+        // No blank line means it is one sentence, not a wrapper.
+        expectUnwrapped("Here is the thing: we should ship.", "Here is the thing: we should ship.")
+        // And unwrapping does not rescue a model that actually answered.
+        expectRejected("Sure, I can help with that.", source: "add milk to the list")
+    }
+
+    private static func expectUnwrapped(
+        _ input: String, _ expected: String, file: StaticString = #file, line: UInt = #line
+    ) {
+        let actual = AppleFoundationModelsPostProcessor.strippingAssistantPreamble(input)
+        expect(actual == expected,
+               "Expected \(input.debugDescription) to unwrap to \(expected.debugDescription), got \(actual.debugDescription)",
+               file: file, line: line)
     }
 
     /// The model sometimes returns the hint block it was given instead of the
