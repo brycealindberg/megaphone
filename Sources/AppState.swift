@@ -3466,6 +3466,12 @@ final class AppState: ObservableObject, @unchecked Sendable {
         if profile.emoji {
             cleanupInput = SpokenEmoji.substitute(cleanupInput)
         }
+        // The user's own corrections are settled here for the same reason as every
+        // pass above: the model deletes or paraphrases a term it cannot place, and
+        // the post-model pass below can only substitute text that survived. Handing
+        // it the intended spelling gives it ordinary content it has no reason to
+        // touch. Idempotent with that later pass — the spoken form is gone by then.
+        cleanupInput = TranscriptTidier.apply(corrections: corrections, to: cleanupInput)
 
         let deterministic = TranscriptTidier.tidy(cleanupInput, corrections: corrections)
         let safeFallback = deterministic.isEmpty ? trimmedRawTranscript : deterministic
