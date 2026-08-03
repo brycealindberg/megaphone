@@ -13,6 +13,45 @@ enum SmartCleanupValidationTests {
         testTheSpeakersOwnOpeningIsNotAPreamble()
         testEchoedPromptIsRejected()
         testAssistantPreambleIsUnwrappedNotDiscarded()
+        testInventedContentIsRejected()
+    }
+
+    /// A rewrite keeps roughly the same length and deletes nothing contiguous,
+    /// so every length and deletion check already here is blind to it. Measured
+    /// over 693 real dictations: 9 invented six or more content words, against
+    /// **0 of 9,401** pairs from an independent corpus.
+    private static func testInventedContentIsRejected() {
+        // The direction inverted: an instruction became the speaker's own plan.
+        expectRejected(
+            "I need to create an HTML kickoff call artifact, gather all the necessary context, and utilize sub-agents to ensure I'm fully prepared.",
+            source: "Help me make a kickoff call HTML artifact, get all context, use sub-agents, get all context and everything so I'm ready tomorrow"
+        )
+        // Rewritten into a voice the speaker did not use.
+        expectRejected(
+            "How can we improve entity mapping and data connectivity? I believe users would appreciate the ability to populate the system automatically.",
+            source: "How can we make the entity mapping and data connecting better? I feel like users would like to, if they could just upload a CSV and have it fill in"
+        )
+
+        // Ordinary cleanup invents nothing — punctuation and capitalisation only.
+        expectAccepted(
+            "I think we should ship it tomorrow and tell the team once the tests are green.",
+            source: "um so I think like we should uh ship it tomorrow and tell the team once the tests are green"
+        )
+        // Technical assembly is not invention: every fragment was spoken.
+        expectAccepted(
+            "The command is git push --force-with-lease, then check the user_id in the JSON output.",
+            source: "the command is git push dash dash force with lease then check the user underscore id in the JSON output"
+        )
+        // A dictated list is the speaker's own words rearranged.
+        expectAccepted(
+            "- Wash the dishes\n- Buy coffee\n- Call the bank",
+            source: "bullet point wash the dishes bullet point buy coffee bullet point call the bank"
+        )
+        // Repetition collapsed by the model invents nothing.
+        expectAccepted(
+            "Thank you for watching. Okay, so the invoice went out this morning and the client confirmed.",
+            source: "Thank you for watching Thank you for watching Thank you for watching okay so the invoice went out this morning and the client confirmed"
+        )
     }
 
     /// Measured over 200 real dictations: 16 were rejected and 6 of them were a

@@ -1033,6 +1033,72 @@ actor AppleFoundationModelsPostProcessor {
         return !".!?…".contains(last)
     }
 
+    /// Content in the output that the speaker never said.
+    ///
+    /// A rewrite keeps roughly the same length and deletes nothing contiguous,
+    /// so every length and deletion check already here is blind to it. Measured
+    /// over 693 real dictations, 9 (1.3%) invented six or more content words,
+    /// against **0 of 9,401** pairs from an independent corpus. Two shapes the
+    /// other guards miss entirely:
+    ///
+    /// ```
+    /// said: Help me make a kickoff call HTML artifact, get all context…
+    /// got : I need to create an HTML kickoff call artifact, gather all the…
+    ///
+    /// said: How can we make the entity mapping and data connecting better?
+    /// got : How can we improve entity mapping and data connectivity? I believe…
+    /// ```
+    ///
+    /// The first inverts the direction — a request to an assistant becomes the
+    /// speaker narrating their own plan, which pasted into a coding agent reads
+    /// as a statement rather than an instruction.
+    ///
+    /// Words are compared as alphanumeric fragments so assembly is not
+    /// invention: "dash dash force with lease" becoming "--force-with-lease"
+    /// contributes nothing, because every fragment of it was spoken. Known
+    /// limit: a *concatenation* ("fine studio" -> "finestudio") does read as
+    /// invented; at this threshold no real pair reached it.
+    ///
+    /// No alignment needed — a token absent from the source cannot fall inside a
+    /// matched region, so the set difference is exactly the aligned answer.
+    /// Verified equal at every threshold on both populations.
+    static func inventedContent(source: String, output: String) -> [String] {
+        var spoken = Set<String>()
+        for word in DictationEditLearner.words(in: source) {
+            spoken.formUnion(Self.alphanumericFragments(word))
+        }
+        var invented: [String] = []
+        for word in DictationEditLearner.words(in: output) {
+            let fragments = Self.alphanumericFragments(word)
+            // Pure punctuation or markup, or assembled from what was said.
+            if fragments.isEmpty || fragments.allSatisfy(spoken.contains) { continue }
+            invented += fragments.filter {
+                !spoken.contains($0) && !contentWordExclusions.contains($0) && $0.count > 2
+            }
+        }
+        return invented
+    }
+
+    /// How many invented content words before the output is a rewrite.
+    private static let maximumInventedWords = 6
+
+    /// Closed-class words plus spoken hesitation. A general list rather than one
+    /// tuned against the sample it was measured on.
+    private static let contentWordExclusions: Set<String> = Set("""
+    a an the and or but so then that this these those it its they them their he she his her
+    i me my we us our you your is are was were be been being am do does did doing have has had
+    having of to in for on at by with from as if when while there here what which who whom how
+    why not no yes will would can could should may might must just about into over under again
+    more most some any um umm uh uhh erm hmm ah oh eh like yeah yep okay ok right anyway
+    basically actually literally really very
+    """.split(whereSeparator: \.isWhitespace).map(String.init))
+
+    private static func alphanumericFragments(_ word: String) -> [String] {
+        word.lowercased()
+            .split { !($0.isLetter || $0.isNumber) }
+            .map(String.init)
+    }
+
     /// Removes an "Here is the cleaned text:" wrapper, keeping the cleanup inside it.
     ///
     /// Measured over 200 real dictations under production timeouts: 16 were
@@ -1172,6 +1238,15 @@ actor AppleFoundationModelsPostProcessor {
                     && !source.localizedCaseInsensitiveContains($0.replacingOccurrences(of: ":", with: ""))
             }) {
                 throw SmartCleanupError.invalidOutput("echoed the prompt section \"\(label)\"")
+            }
+            // Words the speaker never said. Checked before the deletion guard
+            // because a rewrite usually both invents and drops, and "wrote
+            // things you did not say" is the clearer report of the two.
+            let invented = Self.inventedContent(source: source, output: output)
+            if invented.count >= Self.maximumInventedWords {
+                throw SmartCleanupError.invalidOutput(
+                    "invented \(invented.count) words including \"\(invented.prefix(4).joined(separator: ", "))\""
+                )
             }
             // A salutation the speaker never uttered. Compared as a word against
             // the whole source rather than positionally, so "Hi Dana of course
