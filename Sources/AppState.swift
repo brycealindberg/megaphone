@@ -4524,11 +4524,21 @@ final class AppState: ObservableObject, @unchecked Sendable {
 
         init() { enabled = UserDefaults.standard.bool(forKey: "latency_marks") }
 
+        /// `Duration.components` splits into whole seconds and the *fractional*
+        /// remainder, so reading `attoseconds` alone silently reports anything
+        /// past a second modulo 1000 ms — a 1,236 ms path logged as 235.9 ms.
+        /// That corrupts exactly the slow runs the marks exist to catch, so the
+        /// seconds field has to be carried too.
+        private static func milliseconds(_ duration: Duration) -> Double {
+            let parts = duration.components
+            return Double(parts.seconds) * 1000 + Double(parts.attoseconds) / 1e15
+        }
+
         mutating func mark(_ label: StaticString) {
             guard enabled else { return }
             let now = ContinuousClock.now
-            let step = Double(last.duration(to: now).components.attoseconds) / 1e15
-            let total = Double(start.duration(to: now).components.attoseconds) / 1e15
+            let step = Self.milliseconds(last.duration(to: now))
+            let total = Self.milliseconds(start.duration(to: now))
             last = now
             os_log(.default, log: recordingLog, "latency %{public}@ +%.1f ms (%.1f ms total)",
                    String(describing: label), step, total)
@@ -4541,8 +4551,8 @@ final class AppState: ObservableObject, @unchecked Sendable {
         mutating func mark(_ label: StaticString, chars: Int) {
             guard enabled else { return }
             let now = ContinuousClock.now
-            let step = Double(last.duration(to: now).components.attoseconds) / 1e15
-            let total = Double(start.duration(to: now).components.attoseconds) / 1e15
+            let step = Self.milliseconds(last.duration(to: now))
+            let total = Self.milliseconds(start.duration(to: now))
             last = now
             os_log(.default, log: recordingLog, "latency %{public}@ +%.1f ms (%.1f ms total) [%d chars]",
                    String(describing: label), step, total, chars)
