@@ -34,7 +34,7 @@ ICON_SOURCE = Resources/AppIcon-Source.png
 ICON_ICNS = Resources/AppIcon.icns
 endif
 
-.PHONY: all clean run icon dmg codesign-dmg notarize test
+.PHONY: all clean run install icon dmg codesign-dmg notarize test
 
 all: $(APP_EXECUTABLE_TARGET)
 
@@ -169,3 +169,26 @@ clean:
 
 run: all
 	open "$(APP_BUNDLE)"
+
+# Replace the copy in /Applications with this build and relaunch it.
+#
+# The defaults matter. APP_NAME and BUNDLE_ID both default to the *dev* values,
+# and installing a bundle identified as `...megaphone.dev` orphans the real
+# app's Accessibility and Microphone grants and its UserDefaults — the settings,
+# the dictionary and the correction list all read as empty. So pass the
+# production values, and a signing identity from the same team as the installed
+# copy or the TCC grants do not carry over:
+#
+#   make install APP_NAME=Megaphone BUNDLE_ID=com.kuberwastaken.megaphone \
+#        CODESIGN_IDENTITY="<Developer ID hash from: security find-identity -v -p codesigning>"
+#
+# Use the certificate's SHA-1 hash rather than its name when more than one
+# certificate shares that name, which codesign rejects as ambiguous.
+install: all
+	@osascript -e 'tell application "$(APP_NAME)" to quit' >/dev/null 2>&1 || true
+	@i=0; while pgrep -f "/Applications/$(APP_NAME).app" >/dev/null && [ $$i -lt 20 ]; do sleep 0.5; i=$$((i+1)); done; true
+	@rm -rf "/Applications/$(APP_NAME).app"
+	@ditto "$(APP_BUNDLE)" "/Applications/$(APP_NAME).app"
+	@codesign --verify --strict "/Applications/$(APP_NAME).app"
+	@open "/Applications/$(APP_NAME).app"
+	@echo "Installed $(APP_NAME).app ($(BUNDLE_ID))"
