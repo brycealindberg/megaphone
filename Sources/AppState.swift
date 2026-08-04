@@ -3482,20 +3482,13 @@ final class AppState: ObservableObject, @unchecked Sendable {
         if profile.emoji {
             cleanupInput = SpokenEmoji.substitute(cleanupInput)
         }
-        // The user's own corrections are settled here for the same reason as every
-        // pass above: the model deletes or paraphrases a term it cannot place, and
-        // the post-model pass below can only substitute text that survived. Handing
-        // it the intended spelling gives it ordinary content it has no reason to
-        // touch. Idempotent with that later pass — the spoken form is gone by then.
-        cleanupInput = TranscriptTidier.apply(corrections: corrections, to: cleanupInput)
-
-        // Corrections were applied to `cleanupInput` immediately above, and
-        // `tidy` would apply them a second time against the already-corrected
-        // text. Safe for every mapping currently configured, but not in general:
-        // a rule whose replacement contains its own spoken form ("claude" ->
-        // "Claude Code") or two that chain ("get" -> "git", "git" -> "GitHub")
-        // compound on a second pass. Pass none rather than rely on the shapes.
-        let deterministic = TranscriptTidier.tidy(cleanupInput, corrections: [])
+        // Corrections are deliberately NOT applied to `cleanupInput`, unlike the
+        // laughter, emoji and misheard-name passes above. Handing the model the
+        // corrected spelling reads as the same idea, and it measured worse across
+        // the 120 real-voice cases — acc 0.8828 -> 0.8448, deletions 69 -> 99 —
+        // because the correction list's real job is anchoring the prompt, not
+        // fixing the transcript. See the block in `cleanupHintText`.
+        let deterministic = TranscriptTidier.tidy(cleanupInput, corrections: corrections)
         let safeFallback = deterministic.isEmpty ? trimmedRawTranscript : deterministic
         if cleanupMode == .basic {
             return (finishText(safeFallback), .deterministicCleanup, "", nil)
