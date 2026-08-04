@@ -354,16 +354,6 @@ final class SpeechAnalyzerStreamingSession: @unchecked Sendable {
             try await SpeechAnalyzerService.ensureAssets(for: transcriber, locale: locale)
 
             let analyzer = SpeechAnalyzer(modules: [transcriber])
-            if let context = SpeechAnalyzerService.vocabularyContext(
-                from: vocabulary,
-                additionalTerms: await extraTerms
-            ) {
-                do {
-                    try await analyzer.setContext(context)
-                } catch {
-                    os_log(.error, log: speechLog, "setContext failed: %{public}@", error.localizedDescription)
-                }
-            }
 
             guard let format = await SpeechAnalyzer.bestAvailableAudioFormat(compatibleWith: [transcriber]) else {
                 throw SpeechAnalyzerServiceError.noCompatibleAudioFormat
@@ -399,6 +389,34 @@ final class SpeechAnalyzerStreamingSession: @unchecked Sendable {
             }
             os_log(.info, log: speechLog, "streaming session started (locale: %{public}@)",
                    locale.identifier(.bcp47))
+
+            // Context is applied AFTER the analyzer is running, and this order is
+            // the whole point.
+            //
+            // `extraTerms` is an accessibility walk of the frontmost app, capped
+            // at `additionalTermsTimeout` — 1.2s. Awaiting it before
+            // `analyzer.start` made the recogniser's startup wait on that walk,
+            // and if the user stopped speaking first, `commitAndAwaitFinal`
+            // blocked on this task and then analysed the whole utterance at once.
+            // The comment on `vocabularyContext` records that those terms have no
+            // observable effect on the transcript, measured. So it was up to 1.2s
+            // of delay bought with nothing, and the "this is free" note above
+            // only holds while the walk finishes inside the asset check.
+            //
+            // Applied here it still reaches the analyzer for the day Apple wires
+            // it up, and no longer sits between the user and their audio.
+            let terms = await extraTerms
+            guard !queue.sync(execute: { self.finished }) else { return }
+            if let context = SpeechAnalyzerService.vocabularyContext(
+                from: vocabulary,
+                additionalTerms: terms
+            ) {
+                do {
+                    try await analyzer.setContext(context)
+                } catch {
+                    os_log(.error, log: speechLog, "setContext failed: %{public}@", error.localizedDescription)
+                }
+            }
         }
     }
 

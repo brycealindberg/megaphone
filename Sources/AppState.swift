@@ -3543,7 +3543,15 @@ final class AppState: ObservableObject, @unchecked Sendable {
                     streamingSession.cancel()
                 }
                 if !transcript.isEmpty { return transcript }
-                // Empty result: fall through to file-based analysis.
+                // Empty result: fall through to file-based analysis. Logged
+                // because the sibling failure below is, and this branch rebuilds
+                // the entire speech stack — locale XPC, a fresh transcriber,
+                // asset check, a new analyzer and a full re-analysis of the file.
+                // Silent, it is indistinguishable from the streaming path simply
+                // being slow, which is exactly the question the latency marks
+                // could not answer.
+                os_log(.default, log: recordingLog,
+                       "streaming transcription returned empty, falling back to file")
             } catch is CancellationError {
                 throw CancellationError()
             } catch {
