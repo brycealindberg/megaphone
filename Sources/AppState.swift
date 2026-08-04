@@ -3664,9 +3664,15 @@ final class AppState: ObservableObject, @unchecked Sendable {
                     } else {
                         appContext = self.fallbackContextAtStop()
                     }
+                    // Split the block that live marks put at ~1 s — larger than
+                    // inference and the biggest remaining segment. The context
+                    // capture is an unbounded synchronous accessibility read into
+                    // the frontmost app, so it is the first suspect.
+                    marks.mark("context resolved")
                     let previousText = await MainActor.run {
                         self.recentTextForWakeCommand(in: appContext, now: Date())
                     }
+                    marks.mark("previous text read")
                     try Task.checkCancellation()
                     if isScratchCommand {
                         await MainActor.run {
@@ -3700,6 +3706,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
                         smartSessionID: cleanupSessionID
                     )
                     try Task.checkCancellation()
+                    marks.mark("processTranscript returned")
 
                     await MainActor.run {
                         guard self.isTranscribing else { return }
@@ -3730,9 +3737,15 @@ final class AppState: ObservableObject, @unchecked Sendable {
                             default:
                                 break
                             }
+                            marks.mark("dictionary observed")
                             if !trimmedFinalTranscript.isEmpty {
                                 DictionaryStore.shared.recordUsage(in: trimmedFinalTranscript)
+                                marks.mark("usage recorded")
+                                // Arming harvests the *previous* dictation first,
+                                // which reads the focused element over synchronous
+                                // accessibility IPC — a hung app blocks the paste here.
                                 self.armEditObservation(for: trimmedFinalTranscript)
+                                marks.mark("edit observation armed")
                             }
                         }
                         self.recordPipelineHistoryEntry(
@@ -3745,6 +3758,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
                             intent: sessionIntent,
                             audioFileName: savedAudioFile?.fileName
                         )
+                        marks.mark("history written")
                         self.transcriptionTask = nil
                         self.transcribingAudioFileName = nil
                         self.lastTranscript = trimmedFinalTranscript
