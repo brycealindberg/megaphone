@@ -18,6 +18,7 @@ enum DictationEditLearnerTests {
         testLevenshteinEarlyExit()
         testWindowKeepsShortFieldsWhole()
         testWindowFindsDictationInsideAHugeBuffer()
+        testWindowIgnoresTextBeyondTheSearchLimit()
         testWindowFallsBackToTheTail()
         testWindowPreservesTheLearnableCorrection()
     }
@@ -31,14 +32,26 @@ enum DictationEditLearnerTests {
     }
 
     private static func testWindowFindsDictationInsideAHugeBuffer() {
-        // The measured case: a terminal handing back its whole scrollback.
+        // The measured case: a terminal handing back its whole scrollback, with
+        // the dictation at the caret — that is, near the end.
         let inserted = "please run git pull on the deploy branch"
-        let noise = String(repeating: "x", count: 2_000_000)
-        let field = noise + inserted + noise
+        let field = String(repeating: "x", count: 2_000_000) + inserted + " and then wait"
         let w = DictationEditLearner.window(in: field, around: inserted)
         expect(w.contains(inserted), true, "the dictation survives the window")
         expect(w.count <= inserted.count + DictationEditLearner.windowMargin * 2 + 1, true,
                "the window is bounded, not the whole buffer")
+    }
+
+    private static func testWindowIgnoresTextBeyondTheSearchLimit() {
+        // Buried further back than the caret could plausibly be: the tail cut
+        // means it is not found, and the fallback must still be bounded rather
+        // than handing back the buffer.
+        let inserted = "please run git pull on the deploy branch"
+        let field = inserted + String(repeating: "y", count: 2_000_000)
+        let w = DictationEditLearner.window(in: field, around: inserted)
+        expect(w.contains(inserted), false, "beyond the search limit it is not found")
+        expect(w.count <= inserted.count + DictationEditLearner.windowMargin * 2 + 1, true,
+               "the fallback is still bounded")
     }
 
     private static func testWindowFallsBackToTheTail() {

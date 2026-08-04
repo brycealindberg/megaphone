@@ -46,6 +46,11 @@ enum DictationEditLearner {
     /// Margin of surrounding text kept on each side of the dictation.
     static let windowMargin = 400
 
+    /// How far back from the end of the field the dictation is looked for. The
+    /// text was inserted at the caret moments earlier, so anything beyond this
+    /// is not the dictation being harvested.
+    static let searchLimit = 20_000
+
     /// The slice of a focused field worth diffing against one dictation.
     ///
     /// A focused element hands back the app's whole buffer: measured at
@@ -60,18 +65,29 @@ enum DictationEditLearner {
     /// middle of a long document is still found, and falls back to the tail,
     /// which is where a caret usually sits.
     static func window(in field: String, around inserted: String) -> String {
+        // Nothing here may touch the whole buffer. `field.count` is a grapheme
+        // walk over every character — 10 ms on 2 MB of real terminal output,
+        // where uniform ASCII measures 2.5 ms, so it is content-sensitive and
+        // the bad case is the realistic one — and a backwards search is a second
+        // pass. Walking back a bounded number of characters is O(k), so cut a
+        // tail first and do the work inside that. `utf8.count` is O(1) and is
+        // compared against the worst-case bytes-per-character, so the cut only
+        // happens when the field is genuinely large.
+        let searchable = field.utf8.count > searchLimit * 4
+            ? String(field.suffix(searchLimit))
+            : field
         let span = inserted.count + windowMargin * 2
-        guard field.count > span else { return field }
+        guard searchable.count > span else { return searchable }
         let anchor = String(inserted.prefix(24))
         if !anchor.isEmpty,
-           let found = field.range(of: anchor, options: [.backwards]) {
-            let start = field.index(found.lowerBound, offsetBy: -windowMargin, limitedBy: field.startIndex)
-                ?? field.startIndex
-            let end = field.index(found.lowerBound, offsetBy: inserted.count + windowMargin, limitedBy: field.endIndex)
-                ?? field.endIndex
-            return String(field[start..<end])
+           let found = searchable.range(of: anchor, options: [.backwards]) {
+            let start = searchable.index(found.lowerBound, offsetBy: -windowMargin, limitedBy: searchable.startIndex)
+                ?? searchable.startIndex
+            let end = searchable.index(found.lowerBound, offsetBy: inserted.count + windowMargin, limitedBy: searchable.endIndex)
+                ?? searchable.endIndex
+            return String(searchable[start..<end])
         }
-        return String(field.suffix(span))
+        return String(searchable.suffix(span))
     }
 
     static func corrections(inserted: String, edited: String) -> [DictationEditCorrection] {
