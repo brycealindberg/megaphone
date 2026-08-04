@@ -3023,7 +3023,10 @@ final class AppState: ObservableObject, @unchecked Sendable {
             processIdentifier: pending.processIdentifier
         )
         marks.mark("harvest: field read")
-        guard let current = fieldText, current != pending.inserted else { return }
+        // Bound the field before anything walks it — see `window(in:around:)`.
+        guard let full = fieldText else { return }
+        let current = DictationEditLearner.window(in: full, around: pending.inserted)
+        guard current != pending.inserted else { return }
 
         // MG-07 — the only place Megaphone ever learns what the text SHOULD have
         // been. Recording the distance here is what makes "did this change help"

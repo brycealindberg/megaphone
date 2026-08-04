@@ -43,6 +43,37 @@ enum DictationEditLearner {
     /// rewrite. Beyond this the alignment is not trustworthy.
     static let maxSubstitutionsBeforeDiscard = 4
 
+    /// Margin of surrounding text kept on each side of the dictation.
+    static let windowMargin = 400
+
+    /// The slice of a focused field worth diffing against one dictation.
+    ///
+    /// A focused element hands back the app's whole buffer: measured at
+    /// 2,053,392 characters in a terminal, where scoring it cost 483 ms and the
+    /// correction diff another 327 ms — together about 60% of the time between
+    /// the user stopping speaking and the text appearing. The dictation is a few
+    /// hundred characters, and `align` refuses anything over 400 words, so the
+    /// rest of that buffer could never have produced a correction. It was only
+    /// ever paid for.
+    ///
+    /// Anchors on the start of the inserted text so a dictation edited in the
+    /// middle of a long document is still found, and falls back to the tail,
+    /// which is where a caret usually sits.
+    static func window(in field: String, around inserted: String) -> String {
+        let span = inserted.count + windowMargin * 2
+        guard field.count > span else { return field }
+        let anchor = String(inserted.prefix(24))
+        if !anchor.isEmpty,
+           let found = field.range(of: anchor, options: [.backwards]) {
+            let start = field.index(found.lowerBound, offsetBy: -windowMargin, limitedBy: field.startIndex)
+                ?? field.startIndex
+            let end = field.index(found.lowerBound, offsetBy: inserted.count + windowMargin, limitedBy: field.endIndex)
+                ?? field.endIndex
+            return String(field[start..<end])
+        }
+        return String(field.suffix(span))
+    }
+
     static func corrections(inserted: String, edited: String) -> [DictationEditCorrection] {
         let before = words(in: inserted)
         let after = words(in: edited)

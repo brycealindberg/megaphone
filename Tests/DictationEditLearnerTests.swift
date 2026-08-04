@@ -16,6 +16,50 @@ enum DictationEditLearnerTests {
         testFindsEditInsideALargerField()
         testCapsPerEdit()
         testLevenshteinEarlyExit()
+        testWindowKeepsShortFieldsWhole()
+        testWindowFindsDictationInsideAHugeBuffer()
+        testWindowFallsBackToTheTail()
+        testWindowPreservesTheLearnableCorrection()
+    }
+
+    // MARK: window
+
+    private static func testWindowKeepsShortFieldsWhole() {
+        let field = "git pull the branch"
+        expect(DictationEditLearner.window(in: field, around: "get pull the branch"), field,
+               "a field smaller than the span is returned untouched")
+    }
+
+    private static func testWindowFindsDictationInsideAHugeBuffer() {
+        // The measured case: a terminal handing back its whole scrollback.
+        let inserted = "please run git pull on the deploy branch"
+        let noise = String(repeating: "x", count: 2_000_000)
+        let field = noise + inserted + noise
+        let w = DictationEditLearner.window(in: field, around: inserted)
+        expect(w.contains(inserted), true, "the dictation survives the window")
+        expect(w.count <= inserted.count + DictationEditLearner.windowMargin * 2 + 1, true,
+               "the window is bounded, not the whole buffer")
+    }
+
+    private static func testWindowFallsBackToTheTail() {
+        // Nothing to anchor on — the dictation was rewritten past recognition.
+        let field = String(repeating: "a", count: 5000) + "tail marker"
+        let w = DictationEditLearner.window(in: field, around: "completely different words here")
+        expect(w.hasSuffix("tail marker"), true, "falls back to the end of the field")
+        expect(w.count < field.count, true, "still bounded")
+    }
+
+    private static func testWindowPreservesTheLearnableCorrection() {
+        // The whole point: bounding must not cost a correction that would
+        // otherwise have been learned.
+        let inserted = "let's get pull the feature branch before lunch today"
+        let edited = "let's git pull the feature branch before lunch today"
+        let buffer = String(repeating: "noise ", count: 100_000) + edited
+        let windowed = DictationEditLearner.window(in: buffer, around: inserted)
+        let direct = DictationEditLearner.corrections(inserted: inserted, edited: edited)
+        let viaWindow = DictationEditLearner.corrections(inserted: inserted, edited: windowed)
+        expect(direct.first?.written, "git", "the unbounded diff learns git")
+        expect(viaWindow.first?.written, direct.first?.written, "the windowed diff learns the same thing")
     }
 
     /// The motivating case: "git pull" heard as "get pull", user fixes it.
