@@ -3020,7 +3020,8 @@ final class AppState: ObservableObject, @unchecked Sendable {
         // this splits it from the alignment that follows.
         var marks = LatencyMarks()
         let fieldText = contextService.focusedElementText(
-            processIdentifier: pending.processIdentifier
+            processIdentifier: pending.processIdentifier,
+            tailLimit: DictationEditLearner.searchLimit
         )
         marks.mark("harvest: field read")
         // Bound the field before anything walks it — see `window(in:around:)`.

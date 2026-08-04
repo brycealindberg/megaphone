@@ -57,13 +57,47 @@ final class AppContextService {
     /// Returns nil when there is no focused text element or it exposes no value
     /// — common in web views and Electron apps, where this feature simply does
     /// not fire rather than guessing.
-    func focusedElementText(processIdentifier: pid_t) -> String? {
+    /// The focused element's text, optionally only its last `tailLimit`
+    /// characters.
+    ///
+    /// `kAXValue` returns the element's entire contents — measured at 2,053,392
+    /// characters in a terminal, which cost 79-117 ms to copy across the process
+    /// boundary so that all but the last few hundred could be thrown away. When
+    /// a caller only wants the tail, ask for the tail.
+    func focusedElementText(processIdentifier: pid_t, tailLimit: Int? = nil) -> String? {
         let appElement = AXUIElementCreateApplication(processIdentifier)
         guard let focusedElement = accessibilityElement(
             from: appElement,
             attribute: kAXFocusedUIElementAttribute as CFString
         ) else { return nil }
+        if let tailLimit, let tail = tailText(of: focusedElement, limit: tailLimit) {
+            return tail
+        }
         return accessibilityRawString(from: focusedElement, attribute: kAXValueAttribute as CFString)
+    }
+
+    /// Last `limit` characters via the parameterized range attribute. Returns
+    /// nil when the element does not report a length or does not support ranged
+    /// reads — plenty of them do not — so the caller falls back to the whole
+    /// value rather than losing the read entirely.
+    private func tailText(of element: AXUIElement, limit: Int) -> String? {
+        var lengthValue: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(
+            element,
+            kAXNumberOfCharactersAttribute as CFString,
+            &lengthValue
+        ) == .success, let total = lengthValue as? Int, total > 0 else { return nil }
+
+        var range = CFRange(location: max(0, total - limit), length: min(limit, total))
+        guard let rangeValue = AXValueCreate(.cfRange, &range) else { return nil }
+        var text: CFTypeRef?
+        guard AXUIElementCopyParameterizedAttributeValue(
+            element,
+            kAXStringForRangeParameterizedAttribute as CFString,
+            rangeValue,
+            &text
+        ) == .success, let string = text as? String else { return nil }
+        return string
     }
 
     /// Selects `text` only when it is still immediately before the caret in
