@@ -3023,7 +3023,11 @@ final class AppState: ObservableObject, @unchecked Sendable {
             processIdentifier: pending.processIdentifier,
             tailLimit: DictationEditLearner.searchLimit
         )
-        marks.mark("harvest: field read")
+        // Size of the RAW read, before windowing: ~20,000 means the ranged
+        // attribute worked, ~2,000,000 means the element refused it and the
+        // whole field came across anyway. `utf8.count` is O(1); `count` would
+        // be the grapheme walk this path exists to avoid.
+        marks.mark("harvest: field read", chars: fieldText?.utf8.count ?? -1)
         // Bound the field before anything walks it — see `window(in:around:)`.
         guard let full = fieldText else { return }
         let current = DictationEditLearner.window(in: full, around: pending.inserted)
