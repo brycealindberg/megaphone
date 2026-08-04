@@ -3012,16 +3012,24 @@ final class AppState: ObservableObject, @unchecked Sendable {
         // Only read the app the text went into, and only while it is still
         // frontmost — reading a background app's focused element is unreliable.
         guard let app = NSWorkspace.shared.frontmostApplication,
-              app.processIdentifier == pending.processIdentifier,
-              let current = contextService.focusedElementText(
-                processIdentifier: pending.processIdentifier
-              ),
-              current != pending.inserted else { return }
+              app.processIdentifier == pending.processIdentifier else { return }
+        // Live marks put this whole function at ~850 ms — about 60% of
+        // stop-to-paste, and larger than the model call. The read below pulls the
+        // focused element's entire value over synchronous accessibility IPC with
+        // no messaging timeout set anywhere in the app, so it is the suspect;
+        // this splits it from the alignment that follows.
+        var marks = LatencyMarks()
+        let fieldText = contextService.focusedElementText(
+            processIdentifier: pending.processIdentifier
+        )
+        marks.mark("harvest: field read")
+        guard let current = fieldText, current != pending.inserted else { return }
 
         // MG-07 — the only place Megaphone ever learns what the text SHOULD have
         // been. Recording the distance here is what makes "did this change help"
         // answerable at all; without it every improvement is a vibe.
         let quality = DictationQuality.score(inserted: pending.inserted, edited: current)
+        marks.mark("harvest: scored", chars: current.count)
         if quality.isMeasured {
             os_log(
                 .info,
