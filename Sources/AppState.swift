@@ -3489,7 +3489,13 @@ final class AppState: ObservableObject, @unchecked Sendable {
         // touch. Idempotent with that later pass — the spoken form is gone by then.
         cleanupInput = TranscriptTidier.apply(corrections: corrections, to: cleanupInput)
 
-        let deterministic = TranscriptTidier.tidy(cleanupInput, corrections: corrections)
+        // Corrections were applied to `cleanupInput` immediately above, and
+        // `tidy` would apply them a second time against the already-corrected
+        // text. Safe for every mapping currently configured, but not in general:
+        // a rule whose replacement contains its own spoken form ("claude" ->
+        // "Claude Code") or two that chain ("get" -> "git", "git" -> "GitHub")
+        // compound on a second pass. Pass none rather than rely on the shapes.
+        let deterministic = TranscriptTidier.tidy(cleanupInput, corrections: [])
         let safeFallback = deterministic.isEmpty ? trimmedRawTranscript : deterministic
         if cleanupMode == .basic {
             return (finishText(safeFallback), .deterministicCleanup, "", nil)
@@ -4592,8 +4598,14 @@ final class AppState: ObservableObject, @unchecked Sendable {
         /// is known to move latency (~+200 ms per 1,000 chars even prewarmed),
         /// so the number has to be on the same line as the timing or the two
         /// get correlated by eye across separate log streams.
-        mutating func mark(_ label: StaticString, chars: Int) {
+        /// `chars` is an autoclosure because computing it is not always free —
+        /// `utf8.count` on a UTF-16-backed `CFString` of the kind the
+        /// accessibility API hands back measures ~37 ms cold, and evaluating that
+        /// at the call site would have charged every dictation for a diagnostic
+        /// that is off by default.
+        mutating func mark(_ label: StaticString, chars: @autoclosure () -> Int) {
             guard enabled else { return }
+            let chars = chars()
             let now = ContinuousClock.now
             let step = Self.milliseconds(last.duration(to: now))
             let total = Self.milliseconds(start.duration(to: now))

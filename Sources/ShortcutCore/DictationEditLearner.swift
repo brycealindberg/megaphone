@@ -43,7 +43,12 @@ enum DictationEditLearner {
     /// rewrite. Beyond this the alignment is not trustworthy.
     static let maxSubstitutionsBeforeDiscard = 4
 
-    /// Margin of surrounding text kept on each side of the dictation.
+    /// Span kept past the end of the dictation, to cover an edit that lengthened
+    /// it. Deliberately small — see `window(in:around:)` for why a large tail
+    /// corrupts the quality score rather than merely wasting work.
+    static let trailingMargin = 120
+
+    /// Span used by the tail fallback, when the dictation cannot be located.
     static let windowMargin = 400
 
     /// How far back from the end of the field the dictation is looked for. The
@@ -76,18 +81,35 @@ enum DictationEditLearner {
         let searchable = field.utf8.count > searchLimit * 4
             ? String(field.suffix(searchLimit))
             : field
-        let span = inserted.count + windowMargin * 2
-        guard searchable.count > span else { return searchable }
+        // Gate on the same tail the anchor branch keeps, not on the fallback's
+        // generous one: otherwise a merely medium-sized field skips windowing
+        // altogether and keeps all its trailing prose, which is the case the
+        // trailing margin exists to bound.
+        guard searchable.count > inserted.count + trailingMargin else { return searchable }
         let anchor = String(inserted.prefix(24))
         if !anchor.isEmpty,
            let found = searchable.range(of: anchor, options: [.backwards]) {
-            let start = searchable.index(found.lowerBound, offsetBy: -windowMargin, limitedBy: searchable.startIndex)
-                ?? searchable.startIndex
-            let end = searchable.index(found.lowerBound, offsetBy: inserted.count + windowMargin, limitedBy: searchable.endIndex)
+            // Starts exactly at the dictation, and keeps only a small tail.
+            //
+            // Surrounding prose is not context here, it is noise: `align` pairs a
+            // dropped word with whatever follows it, so text after the dictation
+            // gets mis-paired against dictation words and every mis-pair counts
+            // as a deletion. With a 400-character tail, a mid-document dictation
+            // the user never touched scored 0.917 — reported as *measured*, and
+            // biased downward, which is exactly the direction that makes a
+            // harmless prompt change look like a regression.
+            //
+            // The tail still has to cover an edit that lengthened the text
+            // ("git" -> "GitHub"), which is tens of characters, not hundreds.
+            let start = found.lowerBound
+            let end = searchable.index(found.lowerBound, offsetBy: inserted.count + trailingMargin, limitedBy: searchable.endIndex)
                 ?? searchable.endIndex
             return String(searchable[start..<end])
         }
-        return String(searchable.suffix(span))
+        // Anchor not found — the opening was edited past recognition. Take a
+        // generous tail, since there is no longer anything saying where in it
+        // the dictation sits.
+        return String(searchable.suffix(inserted.count + windowMargin))
     }
 
     static func corrections(inserted: String, edited: String) -> [DictationEditCorrection] {

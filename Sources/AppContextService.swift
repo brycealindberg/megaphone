@@ -97,7 +97,12 @@ final class AppContextService {
             rangeValue,
             &text
         ) == .success, let string = text as? String else { return nil }
-        return string
+        // Empty means "no value", exactly as `accessibilityRawString` treats it.
+        // A stale `kAXNumberOfCharacters` can point the range past the real end,
+        // and an element that clamps rather than errors answers .success with "".
+        // Returned as a value that would score every dictation 0.000 as though
+        // measured; returned as nil it falls back to the whole field.
+        return string.isEmpty ? nil : string
     }
 
     /// Selects `text` only when it is still immediately before the caret in
