@@ -88,7 +88,24 @@ final class AppContextService {
             &lengthValue
         ) == .success, let total = lengthValue as? Int, total > 0 else { return nil }
 
-        var range = CFRange(location: max(0, total - limit), length: min(limit, total))
+        return string(
+            of: element,
+            range: CFRange(location: max(0, total - limit), length: min(limit, total))
+        )
+    }
+
+    /// One parameterized ranged read. Returns nil when the element does not
+    /// support them — plenty do not — so every caller must have a whole-value
+    /// fallback.
+    ///
+    /// Empty means "no value", exactly as `accessibilityRawString` treats it.
+    /// A stale `kAXNumberOfCharacters` can point the range past the real end,
+    /// and an element that clamps rather than errors answers .success with "".
+    /// Returned as a value that would score every dictation 0.000 as though
+    /// measured; returned as nil it falls back to the whole field.
+    private func string(of element: AXUIElement, range: CFRange) -> String? {
+        guard range.location >= 0, range.length > 0 else { return nil }
+        var range = range
         guard let rangeValue = AXValueCreate(.cfRange, &range) else { return nil }
         var text: CFTypeRef?
         guard AXUIElementCopyParameterizedAttributeValue(
@@ -97,11 +114,6 @@ final class AppContextService {
             rangeValue,
             &text
         ) == .success, let string = text as? String else { return nil }
-        // Empty means "no value", exactly as `accessibilityRawString` treats it.
-        // A stale `kAXNumberOfCharacters` can point the range past the real end,
-        // and an element that clamps rather than errors answers .success with "".
-        // Returned as a value that would score every dictation 0.000 as though
-        // measured; returned as nil it falls back to the whole field.
         return string.isEmpty ? nil : string
     }
 
@@ -114,10 +126,7 @@ final class AppContextService {
         guard let focusedElement = accessibilityElement(
             from: appElement,
             attribute: kAXFocusedUIElementAttribute as CFString
-        ), let value = accessibilityRawString(
-            from: focusedElement,
-            attribute: kAXValueAttribute as CFString
-        ), var selectedRange = accessibilityRange(
+        ), let selectedRange = accessibilityRange(
             from: focusedElement,
             attribute: kAXSelectedTextRangeAttribute as CFString
         ), selectedRange.length == 0 else {
@@ -125,32 +134,73 @@ final class AppContextService {
         }
 
         let target = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !target.isEmpty else { return false }
-        let valueNSString = value as NSString
-        let targetLength = (target as NSString).length
-        var caret = selectedRange.location
-        guard caret >= 0, caret <= valueNSString.length else { return false }
+        let caret = selectedRange.location
+        // Necessary condition, checked before any read: the whitespace step below
+        // only ever moves the caret earlier, so a caret this close to the start
+        // can never have the target in front of it.
+        guard !target.isEmpty, caret >= (target as NSString).length else { return false }
 
-        // Dictation appends one convenience space after sentence punctuation.
-        if caret > 0,
-           let trailingScalar = UnicodeScalar(valueNSString.character(at: caret - 1)),
-           CharacterSet.whitespacesAndNewlines.contains(trailingScalar) {
-            caret -= 1
-        }
-        guard caret >= targetLength else { return false }
-        let candidateRange = NSRange(location: caret - targetLength, length: targetLength)
-        guard valueNSString.substring(with: candidateRange) == target else { return false }
+        guard var selection = caretPrecedingSelection(
+            of: focusedElement,
+            target: target,
+            caret: caret
+        ).map({ CFRange(location: $0.location, length: $0.length) }) else { return false }
 
-        selectedRange = CFRange(
-            location: candidateRange.location,
-            length: candidateRange.length + (selectedRange.location - caret)
-        )
-        guard let rangeValue = AXValueCreate(.cfRange, &selectedRange) else { return false }
+        guard let rangeValue = AXValueCreate(.cfRange, &selection) else { return false }
         return AXUIElementSetAttributeValue(
             focusedElement,
             kAXSelectedTextRangeAttribute as CFString,
             rangeValue
         ) == .success
+    }
+
+    /// Reads only the characters the match can possibly involve, then defers to
+    /// `CaretPrecedingSelection` for the decision.
+    ///
+    /// `kAXValue` returns the element's entire contents — measured at 2,053,392
+    /// characters in a terminal, 79-117 ms to copy across the process boundary —
+    /// to inspect at most a few hundred of them right before the caret. This is
+    /// the same narrowing `focusedElementText(tailLimit:)` already uses; over 70
+    /// production reads it never once fell back, so the ranged attribute is well
+    /// supported where it matters.
+    private func caretPrecedingSelection(
+        of element: AXUIElement,
+        target: String,
+        caret: Int
+    ) -> NSRange? {
+        if let requested = CaretPrecedingSelection.windowRange(target: target, caret: caret),
+           let window = string(
+               of: element,
+               range: CFRange(location: requested.location, length: requested.length)
+           ) {
+            switch CaretPrecedingSelection.evaluate(
+                target: target,
+                window: window as NSString,
+                requested: requested
+            ) {
+            case .selection(let range):
+                return range
+            case .noMatch:
+                // Definitive — the window covered every character a match could
+                // use, so there is nothing for the whole value to add.
+                return nil
+            case .invalidRead:
+                break  // fall through and pay for the whole value
+            }
+        }
+
+        guard let value = accessibilityRawString(
+            from: element,
+            attribute: kAXValueAttribute as CFString
+        ) else { return nil }
+        let valueNSString = value as NSString
+        guard caret <= valueNSString.length else { return nil }
+        guard case .selection(let range) = CaretPrecedingSelection.evaluate(
+            target: target,
+            window: valueNSString.substring(to: caret) as NSString,
+            requested: NSRange(location: 0, length: caret)
+        ) else { return nil }
+        return range
     }
 
     func collectContext() async -> AppContext {

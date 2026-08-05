@@ -32,6 +32,7 @@ struct AppContextServiceTests {
         MouseDictationButtonTests.run()
         DoubleTapHoldCoordinatorTests.run()
         DictationEditLearnerTests.run()
+        CaretPrecedingSelectionTests.run()
         CasualPunctuationTests.run()
         SelfCorrectionResolverTests.run()
         QuestionMarkTests.run()
