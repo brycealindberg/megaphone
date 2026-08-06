@@ -3110,6 +3110,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
 
     private enum TranscriptProcessingOutcome {
         case skippedEmptyRawTranscript
+        case abandonedByTrailingMarker
         case voiceMacro(command: String)
         case deterministicCleanup
         case smartCleanupSucceeded(elapsed: TimeInterval)
@@ -3125,6 +3126,8 @@ final class AppState: ObservableObject, @unchecked Sendable {
             switch self {
             case .skippedEmptyRawTranscript:
                 return "Skipped macros and post-processing for empty raw transcript"
+            case .abandonedByTrailingMarker:
+                return "Whole utterance abandoned by a trailing marker; nothing pasted"
             case .voiceMacro(let command):
                 return "Voice macro used: \(command)"
             case .deterministicCleanup:
@@ -3458,6 +3461,15 @@ final class AppState: ObservableObject, @unchecked Sendable {
         var cleanupInput = profile.restarts
             ? SelfCorrectionResolver.resolve(trimmedRawTranscript)
             : trimmedRawTranscript
+        // The resolver consumed the whole utterance — "OK, I'm dictating now,
+        // actually scratch that." is entirely the abandoned clause, so there is
+        // nothing left to paste. Returning here rather than falling through is
+        // load-bearing: `safeFallback` below restores `trimmedRawTranscript`
+        // whenever the deterministic pass comes back empty, which would paste
+        // back the exact text the speaker just asked to throw away.
+        if cleanupInput.isEmpty {
+            return ("", .abandonedByTrailingMarker, "", nil)
+        }
         // Laughter and spoken emoji names are settled *before* cleanup, not just
         // after. Measured: the model reads a leading "ha ha" as a hesitation
         // filler and a trailing "crying face emoji" as abandoned wording, and

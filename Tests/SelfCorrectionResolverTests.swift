@@ -17,6 +17,65 @@ enum SelfCorrectionResolverTests {
         testOpenerMustBeWholeWord()
         testIMeanRestart()
         testIMeanValueSwapUntouched()
+        // trailing abandonment
+        testTrailingScratchThatEmptiesTheUtterance()
+        testTrailingScratchThatKeepsEarlierSentences()
+        testTrailingMarkerNeedsAClauseBoundary()
+        testTrailingMarkerIsASubsetOfMarkers()
+        testTrailingMarkerToleratesMissingComma()
+        testOtherTrailingAbandonPhrases()
+    }
+
+    // MARK: - trailing abandonment
+
+    /// The measured case, 2026-08-05. Three components each declined it and the
+    /// text pasted verbatim: `ScratchCommandMatcher` needs the command to be the
+    /// whole utterance, this resolver needed a clause after the marker, and the
+    /// cleanup model only resolves value swaps.
+    private static func testTrailingScratchThatEmptiesTheUtterance() {
+        expect(SelfCorrectionResolver.resolve("OK, I'm dictating now, actually scratch that."), "")
+        expect(SelfCorrectionResolver.resolve("OK, I'm dictating now, scratch that"), "")
+    }
+
+    /// The safety margin. A misfire can only ever cost the clause the marker is
+    /// attached to, never a sentence the speaker already finished.
+    private static func testTrailingScratchThatKeepsEarlierSentences() {
+        expect(
+            SelfCorrectionResolver.resolve("Send the invoice Friday. OK I'm dictating now, actually scratch that."),
+            "Send the invoice Friday."
+        )
+    }
+
+    /// "scratch that" as the speaker's actual words. "to" is neither a particle
+    /// nor punctuation, so the marker belongs to the sentence.
+    private static func testTrailingMarkerNeedsAClauseBoundary() {
+        for s in ["I need to scratch that", "Remind me to scratch that", "Please scratch that"] {
+            expect(SelfCorrectionResolver.resolve(s), s)
+        }
+    }
+
+    /// Trailing markers are a strict subset of `markers`. A person trailing off
+    /// with "I mean" is not deleting a sentence, and this path deletes sentences.
+    private static func testTrailingMarkerIsASubsetOfMarkers() {
+        for s in ["Let's meet Thursday, I mean.", "We should ship it, no wait.", "Call Dana, actually wait."] {
+            expect(SelfCorrectionResolver.resolve(s), s)
+        }
+        for phrase in SelfCorrectionResolver.trailingAbandonMarkers {
+            guard SelfCorrectionResolver.markers.contains(phrase) else {
+                fatalError("SelfCorrectionResolver: \"\(phrase)\" is a trailing marker but not a marker")
+            }
+        }
+    }
+
+    /// The recogniser's comma placement is not reliable enough to require, so a
+    /// bare particle is boundary enough.
+    private static func testTrailingMarkerToleratesMissingComma() {
+        expect(SelfCorrectionResolver.resolve("OK I'm dictating now actually scratch that"), "")
+    }
+
+    private static func testOtherTrailingAbandonPhrases() {
+        expect(SelfCorrectionResolver.resolve("Book it for Tuesday, no scratch that"), "")
+        expect(SelfCorrectionResolver.resolve("Book it for Tuesday. Actually, let me start over."), "Book it for Tuesday.")
     }
 
     /// "I mean" restart (found by the adversarial verification pass).

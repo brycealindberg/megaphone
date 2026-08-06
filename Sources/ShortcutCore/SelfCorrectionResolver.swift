@@ -22,6 +22,35 @@ enum SelfCorrectionResolver {
         "start over", "actually wait", "no wait", "wait no", "i mean"
     ]
 
+    /// Markers that abandon what came before even with **nothing after them**.
+    ///
+    /// The restart path below needs a re-stated clause to keep; these need
+    /// nothing, because "…, actually scratch that." is a complete instruction on
+    /// its own. Measured 2026-08-05 from a real dictation: `ScratchCommandMatcher`
+    /// declined it (that command must be the whole utterance), this resolver
+    /// declined it (nothing followed the marker), and the cleanup model left it
+    /// alone (it resolves value swaps, not trailing abandonment) — so the text
+    /// pasted verbatim and the speaker got nothing they asked for.
+    ///
+    /// Deliberately a **subset** of `markers`. "i mean", "no wait" and
+    /// "actually wait" are excluded: "Let's meet Thursday, I mean." is a person
+    /// trailing off, not deleting a sentence, and this path deletes sentences.
+    static let trailingAbandonMarkers: Set<String> = [
+        "scratch that", "no scratch that",
+        "start over", "let me start over", "let me restart", "let me redo that"
+    ]
+
+    /// What has to sit immediately before a trailing marker for it to count as
+    /// abandonment rather than the speaker's actual words. Without this,
+    /// "I need to scratch that" loses the sentence it is the point of.
+    ///
+    /// A particle is enough on its own, with or without the comma, because the
+    /// recogniser's comma placement is not reliable enough to require —
+    /// separately measured this session at 190 commas against 43 in ground truth.
+    private static let boundaryParticles: Set<String> = [
+        "actually", "no", "ok", "okay", "um", "uh", "er", "hmm"
+    ]
+
     /// A restart fires only when what follows the marker begins with one of
     /// these clause openers — the signal that the speaker is re-stating the
     /// whole thought, not correcting one word in it. Longest first.
@@ -38,8 +67,19 @@ enum SelfCorrectionResolver {
 
         let afterStart = marker.location + marker.length
         guard afterStart <= ns.length else { return text }
-        let after = ns.substring(from: afterStart)
-            .trimmingCharacters(in: CharacterSet(charactersIn: " ,;:—-\t\n"))
+        let tail = ns.substring(from: afterStart)
+
+        // Nothing but punctuation left, so there is no re-stated clause to keep
+        // and the restart path below cannot apply. Trimmed against punctuation
+        // as well as whitespace: the recogniser writes "scratch that." with a
+        // full stop, and testing `after` alone read that stop as a continuation.
+        if tail.trimmingCharacters(
+            in: CharacterSet.whitespacesAndNewlines.union(.punctuationCharacters)
+        ).isEmpty {
+            return resolvingTrailingAbandon(text, ns: ns, marker: marker)
+        }
+
+        let after = tail.trimmingCharacters(in: CharacterSet(charactersIn: " ,;:—-\t\n"))
         guard !after.isEmpty, beginsWithRestartOpener(after) else { return text }
 
         // Drop from the start of the current sentence (or the utterance) up to
@@ -51,6 +91,68 @@ enum SelfCorrectionResolver {
         // always capitalized.
         let joined = prefix + capitalizeFirst(after)
         return normalizeSpacing(joined)
+    }
+
+    // MARK: - trailing abandonment
+
+    /// Drops the sentence the marker sits in, keeping every sentence the speaker
+    /// finished before it. "Send the invoice Friday. OK I'm dictating now,
+    /// actually scratch that." keeps "Send the invoice Friday."
+    ///
+    /// Keeping the earlier sentences is the whole safety margin here. This path
+    /// deletes text on a lexical signal, which is the failure mode that sank
+    /// five designs of the content-loss guard this same session, so it is scoped
+    /// so that a misfire can only ever lose the clause the marker is attached to
+    /// — never something the speaker had already finished saying. `lastTranscript`
+    /// still holds the raw text for Paste Again either way.
+    private static func resolvingTrailingAbandon(
+        _ text: String, ns: NSString, marker: NSRange
+    ) -> String {
+        // `lastMarkerRange` returns the RIGHTMOST match, so "let me start over"
+        // arrives as the shorter "start over" nested inside it — and the
+        // boundary check then reads the text before it as "…let me" and
+        // declines. Re-widen to the longest abandon phrase ending at the same
+        // point before deciding anything.
+        guard let phrase = longestTrailingAbandonRange(
+            endingAt: marker.location + marker.length, in: ns
+        ) else { return text }
+        guard endsAtClauseBoundary(ns.substring(to: phrase.location)) else { return text }
+        return normalizeSpacing(ns.substring(to: sentenceStart(before: phrase.location, in: ns)))
+    }
+
+    /// The longest `trailingAbandonMarkers` phrase whose match ends exactly at
+    /// `end`, or nil when the marker there is not an abandon phrase at all.
+    private static func longestTrailingAbandonRange(endingAt end: Int, in ns: NSString) -> NSRange? {
+        var best: NSRange?
+        for phrase in trailingAbandonMarkers {
+            let pattern = #"(?<![\p{L}\p{N}])"# + escapedSpaced(phrase) + #"(?![\p{L}\p{N}])"#
+            guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive])
+            else { continue }
+            let all = regex.matches(in: ns as String, range: NSRange(location: 0, length: ns.length))
+            for match in all where match.range.location + match.range.length == end {
+                if best == nil || match.range.length > best!.length { best = match.range }
+            }
+        }
+        return best
+    }
+
+    /// Whether the text before a trailing marker ends somewhere a new clause
+    /// could start — a particle ("actually"), clause punctuation, a finished
+    /// sentence, or the very beginning of the utterance.
+    ///
+    /// This is the check that keeps "I need to scratch that" intact: "to" is
+    /// neither a particle nor punctuation, so the marker is part of the sentence
+    /// rather than a comment on it.
+    private static func endsAtClauseBoundary(_ before: String) -> Bool {
+        let trimmed = before.trimmingCharacters(in: .whitespaces)
+        guard let last = trimmed.last else { return true }
+        if last == "," || last == ";" || last == ":" || last == "—" || last == "-"
+            || last == "." || last == "!" || last == "?" { return true }
+        let lastWord = trimmed
+            .split(whereSeparator: { $0.isWhitespace })
+            .last
+            .map { String($0).lowercased().filter { !$0.isPunctuation } } ?? ""
+        return boundaryParticles.contains(lastWord)
     }
 
     // MARK: - marker
