@@ -16,6 +16,11 @@ enum CasualPunctuationTests {
         testLeavesLongSentenceCommaAlone()
         testDoesNotMatchOpenerAsPrefixOfAnotherWord()
         testEmptyAndNoComma()
+        testNeverTouchesTextWithNoComma()
+        testPolitenessParticleMustEndTheSentence()
+        testOpenerCannotUnprotectAList()
+        testLengthGateCountsAllWhitespace()
+        testStableOnOrdinaryText()
         testAlsoIsAnOpener()
         testPolitenessCommas()
         testPolitenessRuleIsNotLengthGated()
@@ -83,8 +88,13 @@ enum CasualPunctuationTests {
     }
 
     /// The comma is not after the opener but between two short clauses.
+    ///
+    /// The first fixture used to be "No worries man, all good", which is not a
+    /// clause comma at all — it is a vocative, and as of 2026-08-05 it is kept.
+    /// Swapped for an example that exercises what this test is actually named
+    /// for. See `testDirectAddressCommaIsKept` for the measurement.
     private static func testLoneClauseComma() {
-        expect(CasualPunctuation.lighten("No worries man, all good"), "No worries man all good")
+        expect(CasualPunctuation.lighten("finished the build, all good"), "finished the build all good")
         expect(CasualPunctuation.lighten("I'm down, let's do it"), "I'm down let's do it")
     }
 
@@ -127,13 +137,24 @@ enum CasualPunctuationTests {
 
     /// Found by the adversarial pass: stacked discourse commas, not a list, so
     /// they all go — but "and"/"or" lists are still protected (above).
+    ///
+    /// The example used to open "Yeah man," which is a vocative, not a discourse
+    /// comma, and as of 2026-08-05 that one is kept. Swapped so this test
+    /// exercises only what it is named for; the vocative case is kept below as a
+    /// contrast, since the interaction is the interesting part.
     private static func testStackedInterjectionCommas() {
         expect(
+            CasualPunctuation.lighten("Yeah for sure, honestly, let's link up later"),
+            "Yeah for sure honestly let's link up later"
+        )
+        // Same shape with an address in front: the vocative survives, the
+        // discourse comma after it still goes.
+        expect(
             CasualPunctuation.lighten("Yeah man, for sure, let's link up later"),
-            "Yeah man for sure let's link up later"
+            "Yeah man, for sure let's link up later"
         )
         expect(CasualPunctuation.lighten("nah bro, I'm good, catch you later"),
-               "nah bro I'm good catch you later")
+               "nah bro, I'm good catch you later")
     }
 
     private static func testLeavesLongSentenceCommaAlone() {
@@ -172,12 +193,112 @@ enum CasualPunctuationTests {
             "dictionary sounds double tap: done"
         )
         // And it must not resurrect the stacked-discourse case, which has none.
+        // CHANGED 2026-08-05, and deliberately: both of these used to assert that
+        // the comma after a direct address is removed. Measured over 9,804 real
+        // dictations, every comma sitting directly after an address term — man,
+        // bro, sir, guys — is one Bryce KEEPS 85% of the time (man 89%, bro 82%,
+        // sir 97%). The corpus even contains this fixture almost verbatim, kept:
+        // "No worries brother, I want these calls to have the best vibes".
+        // These fixtures carried no measurement of their own, so the data wins.
+        // The other comma in the first line still goes.
         expect(
             CasualPunctuation.lighten("yeah man, for sure, let's link up"),
-            "yeah man for sure let's link up"
+            "yeah man, for sure let's link up"
         )
-        expect(CasualPunctuation.lighten("no worries man, all good"), "no worries man all good")
+        expect(CasualPunctuation.lighten("no worries man, all good"), "no worries man, all good")
+        // The two neighbouring shapes stay stripped, because the same measurement
+        // says he cuts those: a bare greeting (22% kept) and a trailing name (35%).
+        expect(CasualPunctuation.lighten("Hey, how are you doing?"), "Hey how are you doing?")
+        expect(
+            CasualPunctuation.lighten("Thanks for reaching out, Sam."),
+            "Thanks for reaching out Sam."
+        )
+        // But a name straight after a greeting is an address, and stays.
+        expect(CasualPunctuation.lighten("Hey Dana, how's it going?"), "Hey Dana, how's it going?")
         expect(CasualPunctuation.lighten("Okay, bet I will"), "Okay bet I will")
+    }
+
+    /// This pass promises to only ever remove commas. It was quietly breaking
+    /// that: `stripPolitenessCommas` ran `collapseSpaces` unconditionally, even
+    /// when it replaced nothing, so merely having the toggle on rewrote
+    /// whitespace on every dictation. In the terminal — where Bryce dictates
+    /// most — that flattened code indentation and closed up " ; " and " : ".
+    private static func testNeverTouchesTextWithNoComma() {
+        for s in ["def run():\n    return 1",
+                  "Steps:\n  1. open it\n  2. close it",
+                  "cd /tmp ; ls -la",
+                  "ratio is 3 : 4 in the config",
+                  "has  two spaces here",
+                  "all good no changes"] {
+            expect(CasualPunctuation.lighten(s), s)
+        }
+    }
+
+    /// The politeness rule fired on the particle OPENING a following clause,
+    /// where the comma is required, and its `\s` even spanned newlines and
+    /// joined two dictated lines. Sentence-final only now.
+    private static func testPolitenessParticleMustEndTheSentence() {
+        for s in ["The deck is ready, though the pricing page still needs a second pass",
+                  "If you could review it by Friday, please let me know",
+                  // Over the length gate on purpose: at 10 words the short-message rule
+                  // strips this regardless, so a shorter fixture would not test rule 3.
+                  "We should bring the charger, as well as the adapter and the spare cable",
+                  "I'll send the revised deck over tomorrow,\nthough it may be late in the day"] {
+            expect(CasualPunctuation.lighten(s), s)
+        }
+        // Still fires where it should.
+        expect(CasualPunctuation.lighten("Let me know, please"), "Let me know please")
+        expect(CasualPunctuation.lighten("Can you check it, please?"), "Can you check it please?")
+    }
+
+    /// The opener rule runs first and removes a comma, which could drop a real
+    /// list from two commas (protected) to one (unprotected) — and then the
+    /// short-message rule ate the survivor. The list test that was supposed to
+    /// guard this used "Sorry," which is not an opener, so the path never ran.
+    private static func testOpenerCannotUnprotectAList() {
+        expect(
+            CasualPunctuation.lighten("Okay, I grabbed eggs, milk and bread"),
+            "Okay I grabbed eggs, milk and bread"
+        )
+        // KNOWN RESIDUAL, deliberately asserted as-is rather than left silent:
+        // the opener rule still eats the first comma when a list ITEM happens to
+        // be an opener word ("word", "man", "no", "so" are all ordinary nouns or
+        // adverbs). The list's remaining commas are now safe, which is the part
+        // this fix owns. Closing it properly means splitting `leadingOpeners` by
+        // register so the slang tokens only apply in casual chat — a real change
+        // that needs its own measurement, not a guess.
+        expect(CasualPunctuation.lighten("Word, Excel, and PowerPoint"), "Word Excel, and PowerPoint")
+    }
+
+    /// The length gate split on spaces and newlines only, so a tab-separated
+    /// line counted as one word and slipped under it.
+    private static func testLengthGateCountsAllWhitespace() {
+        let tabbed = "the quarterly report\tis attached, and the invoice follows next week"
+        expect(CasualPunctuation.lighten(tabbed), tabbed)
+    }
+
+    /// `lighten` is ONCE-ONLY by contract, and this pins the boundary of that.
+    ///
+    /// It is stable for ordinary text, but NOT when the politeness rule removes
+    /// a comma after the list decision has already been made: a second pass then
+    /// sees a one-comma list, which the >=2 guard does not protect, and eats it.
+    ///     "Grab eggs, milk or bread, please"
+    ///       1x -> "Grab eggs, milk or bread please"
+    ///       2x -> "Grab eggs milk or bread please"
+    /// Not reachable in the app — `finishText` runs on exactly one of three
+    /// mutually exclusive return paths, so `lighten` sees each dictation once
+    /// (AppState.swift:3516, :3540, :3545). It IS reachable in an offline
+    /// harness, so any corpus run must apply this to raw ASR exactly once or it
+    /// will overstate removals.
+    private static func testStableOnOrdinaryText() {
+        for s in ["Hey Dana, how's it going?",
+                  "no worries man, all good",
+                  "Let me know, please",
+                  "def run():\n    return 1",
+                  "grab eggs, milk, and bread"] {
+            let once = CasualPunctuation.lighten(s)
+            expect(CasualPunctuation.lighten(once), once)
+        }
     }
 
     private static func testEmptyAndNoComma() {
