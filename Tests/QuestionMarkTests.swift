@@ -15,6 +15,8 @@ enum QuestionMarkTests {
         testLeadingInterjectionsSkipped()
         testHowToInfinitiveUntouched()
         testEmptyAndNoQuestion()
+        testImperativesAreNotQuestions()
+        testExclamativesAreNotQuestions()
     }
 
     private static func testWhQuestions() {
@@ -105,5 +107,34 @@ enum QuestionMarkTests {
         guard got == want else {
             fatalError("QuestionMark: \"\(input)\" -> wanted \"\(want)\", got \"\(got)\"")
         }
+    }
+
+    /// "do it" is one of the most common things Bryce says to Claude Code, and
+    /// this rule was turning it into "do it?". The profile is on by default in
+    /// codeOrTerminal. A stray "?" cannot corrupt a shell command — which is
+    /// what the call site's comment relies on — but a Claude Code prompt is not
+    /// a shell command, and "do it?" reads to an agent as hesitation.
+    private static func testImperativesAreNotQuestions() {
+        for s in ["do it", "do that", "do this", "okay do it", "yeah do it",
+                  "wait do that first", "actually do this instead",
+                  "have it write the test first", "have them look at it"] {
+            expect(QuestionMark.punctuate(s), s)
+        }
+        // The inflected forms are never imperative, so real questions stand.
+        expect(QuestionMark.punctuate("did it work"), "did it work?")
+        expect(QuestionMark.punctuate("does that make sense"), "does that make sense?")
+        expect(QuestionMark.punctuate("has it shipped"), "has it shipped?")
+        // And a pronoun SUBJECT is still an inversion, not an imperative.
+        expect(QuestionMark.punctuate("do you have a minute"), "do you have a minute?")
+        expect(QuestionMark.punctuate("do we need to ship today"), "do we need to ship today?")
+    }
+
+    /// "What a mess" is an exclamative; "what a" is not a question frame.
+    private static func testExclamativesAreNotQuestions() {
+        expect(QuestionMark.punctuate("What a mess"), "What a mess")
+        expect(QuestionMark.punctuate("what an absolute disaster"), "what an absolute disaster")
+        // Ordinary wh-questions are unaffected.
+        expect(QuestionMark.punctuate("what time works for you"), "what time works for you?")
+        expect(QuestionMark.punctuate("how did the demo go"), "how did the demo go?")
     }
 }

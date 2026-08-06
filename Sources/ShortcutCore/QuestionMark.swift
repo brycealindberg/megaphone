@@ -18,6 +18,17 @@ import Foundation
 /// ("you forgot the keys?") are left flat, because nothing in the text says so —
 /// that is the one thing an audio model can do that this cannot.
 enum QuestionMark {
+    /// Bare auxiliaries that are also imperative verbs. Only these two — the
+    /// inflected forms (`does`, `did`, `has`, `had`) cannot open an imperative.
+    private static let imperativeHeads: Set<String> = ["do", "have"]
+
+    /// Objects that make one of the above an instruction rather than a question:
+    /// "do it", "have them look at it". A pronoun subject like "you" or "we" is
+    /// deliberately absent, so "do you have a minute?" still gets its mark.
+    private static let imperativeObjects: Set<String> = [
+        "it", "this", "that", "these", "those", "them"
+    ]
+
     private static let whWords: Set<String> = [
         "what", "when", "where", "who", "whom", "whose", "which", "why", "how"
     ]
@@ -95,8 +106,22 @@ enum QuestionMark {
             ? words[1].lowercased().trimmingCharacters(in: CharacterSet(charactersIn: ".,!?;:'"))
             : ""
 
-        // wh-question, but not an instructional infinitive ("how to reset …").
-        if whWords.contains(w0) { return w1 != "to" }
+        // An imperative, not an inversion. "do it", "do that", "have it write
+        // the test first" are instructions, and they were getting a question
+        // mark — in `codeOrTerminal`, where this profile is on by default and
+        // "do it" is one of the most common things Bryce says to Claude Code.
+        // A stray "?" cannot corrupt a shell command, which is what the comment
+        // at the call site relies on, but a Claude Code prompt is not a shell
+        // command and "do it?" reads as hesitation.
+        //
+        // Bare forms only. `does`, `did`, `has` and `had` are never imperative,
+        // so "did it work?" and "does that make sense?" are untouched.
+        if imperativeHeads.contains(w0), imperativeObjects.contains(w1) { return false }
+        // wh-question, but not an instructional infinitive ("how to reset …")
+        // and not an exclamative ("What a mess", "How a build works").
+        if whWords.contains(w0) {
+            return w1 != "to" && !((w0 == "what" || w0 == "how") && (w1 == "a" || w1 == "an"))
+        }
         // auxiliary + subject ("can you", "is this", "did we").
         if auxiliaries.contains(w0), subjects.contains(w1) { return true }
         // "wanna grab dinner" == "(do you) wanna grab dinner".
