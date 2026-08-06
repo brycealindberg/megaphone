@@ -3494,6 +3494,16 @@ final class AppState: ObservableObject, @unchecked Sendable {
         if profile.emoji {
             cleanupInput = SpokenEmoji.substitute(cleanupInput)
         }
+        // Spoken punctuation words settle here for the same reason laughter and
+        // emoji do: the model reads a trailing "exclamation mark" as abandoned
+        // wording and deletes it, and the correction pass that would have turned
+        // it into "!" runs on the model's OUTPUT, by which point the words are
+        // gone. Measured 2026-08-05 — "…traveled safe. exclamation mark" shipped
+        // with no "!" at all.
+        //
+        // This also fixes Basic mode, where the correction does fire but leaves
+        // the mark stranded after the recogniser's own full stop ("safe. !").
+        cleanupInput = SpokenPunctuation.settle(cleanupInput, corrections: corrections)
         // Corrections are deliberately NOT applied to `cleanupInput`, unlike the
         // laughter, emoji and misheard-name passes above. Handing the model the
         // corrected spelling reads as the same idea, and it measured worse across
