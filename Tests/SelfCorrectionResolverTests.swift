@@ -24,6 +24,33 @@ enum SelfCorrectionResolverTests {
         testTrailingMarkerIsASubsetOfMarkers()
         testTrailingMarkerToleratesMissingComma()
         testOtherTrailingAbandonPhrases()
+        testDecimalsAndAbbreviationsSurviveTheDrop()
+    }
+
+    /// Found by review. `sentenceStart` used to scan back for any ".", so a
+    /// decimal or an abbreviation INSIDE the abandoned sentence left a corrupted
+    /// fragment — which is worse than either correct answer, because it pastes
+    /// something the speaker never said.
+    private static func testDecimalsAndAbbreviationsSurviveTheDrop() {
+        expect(SelfCorrectionResolver.resolve("Charge 1.5 million, actually scratch that."), "")
+        expect(SelfCorrectionResolver.resolve("Tell Dr. Smith tomorrow, scratch that."), "")
+        expect(SelfCorrectionResolver.resolve("Email me at bryce at example.com, scratch that."), "")
+        // A genuine earlier sentence is still kept, decimal and all. BOTH forms:
+        // the version with a leading particle passed while the bare one was
+        // broken, because the particle pushes the marker past the sentence
+        // boundary and hid an off-by-one in the tokenizer scan.
+        expect(
+            SelfCorrectionResolver.resolve("Charge 1.5 million. Actually, scratch that."),
+            "Charge 1.5 million."
+        )
+        expect(
+            SelfCorrectionResolver.resolve("Charge 1.5 million. Scratch that."),
+            "Charge 1.5 million."
+        )
+        expect(
+            SelfCorrectionResolver.resolve("Send the invoice Friday. Scratch that."),
+            "Send the invoice Friday."
+        )
     }
 
     // MARK: - trailing abandonment

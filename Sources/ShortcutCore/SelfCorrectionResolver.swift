@@ -1,4 +1,5 @@
 import Foundation
+import NaturalLanguage
 
 /// Resolves a mid-utterance restart — "let's meet at the office, no wait, let's
 /// do it over Zoom" becomes "let's do it over Zoom" — which is the one
@@ -12,7 +13,9 @@ import Foundation
 /// "I'll…", "let me…"). A value swap's continuation is a bare word ("Wednesday"),
 /// which never matches an opener, so those pass through untouched to the model.
 ///
-/// Pure string logic, no AppKit, so the whole thing is unit-testable.
+/// No AppKit, so the whole thing is unit-testable. `NLTokenizer` is used for
+/// sentence segmentation because scanning back for a `.` cuts inside decimals
+/// and abbreviations.
 enum SelfCorrectionResolver {
     /// Phrases that mark "ignore what I just said". Multi-word entries first so
     /// the longest match wins.
@@ -193,26 +196,53 @@ enum SelfCorrectionResolver {
 
     // MARK: - boundaries
 
-    /// The index just after the previous sentence terminator (. ! ?) or newline
-    /// before `location`, i.e. the start of the clause the marker sits in.
+    /// The start of the sentence containing `location`.
+    ///
+    /// Uses `NLTokenizer` rather than scanning back for a `.`, because scanning
+    /// treats every period as terminal and so cuts inside decimals and
+    /// abbreviations. That produced a *corrupted fragment*, which is worse than
+    /// either possible correct answer:
+    ///
+    ///     "Charge 1.5 million, actually scratch that."  ->  "Charge 1."
+    ///     "Tell Dr. Smith tomorrow, scratch that."      ->  "Tell Dr."
+    ///
+    /// Newlines are still honoured directly: the tokenizer does not always treat
+    /// a hard break as a sentence boundary, and dictated line breaks are one.
     static func sentenceStart(before location: Int, in ns: NSString) -> Int {
+        guard location > 0 else { return 0 }
+        var start = 0
+        let text = ns as String
+        let tokenizer = NLTokenizer(unit: .sentence)
+        tokenizer.string = text
+        tokenizer.enumerateTokens(in: text.startIndex..<text.endIndex) { range, _ in
+            // NSRange(_:in:) converts to UTF-16 offsets, which is what NSString
+            // indices are. `text.distance` counts Characters and would drift on
+            // any emoji or combining mark.
+            // `<=`, not `<`: when the marker IS the start of its own sentence
+            // ("Charge 1.5 million. Scratch that."), that sentence is still the
+            // one containing it. With `<` the scan stopped at the previous
+            // sentence, returned 0, and dropped the earlier sentence too —
+            // destroying the guarantee that only the marker's own clause is lost.
+            let begin = NSRange(range, in: text).location
+            if begin <= location { start = begin; return true }
+            return false
+        }
+        // A hard line break after the tokenizer's sentence start still opens a
+        // new clause, so take whichever boundary is closer to the marker.
         var i = location - 1
-        while i >= 0 {
-            let c = ns.character(at: i)
-            if let scalar = UnicodeScalar(c),
-               scalar == "." || scalar == "!" || scalar == "?" || scalar == "\n" {
-                // Skip the terminator and any following spaces.
-                var start = i + 1
-                while start < ns.length,
-                      let s = UnicodeScalar(ns.character(at: start)),
-                      CharacterSet.whitespaces.contains(s) {
-                    start += 1
-                }
-                return start
+        while i >= start {
+            if let scalar = UnicodeScalar(ns.character(at: i)), scalar == "\n" {
+                start = i + 1
+                break
             }
             i -= 1
         }
-        return 0
+        while start < ns.length,
+              let s = UnicodeScalar(ns.character(at: start)),
+              CharacterSet.whitespaces.contains(s) {
+            start += 1
+        }
+        return min(start, location)
     }
 
     // MARK: - helpers

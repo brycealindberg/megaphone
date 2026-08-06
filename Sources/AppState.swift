@@ -3796,7 +3796,17 @@ final class AppState: ObservableObject, @unchecked Sendable {
                         marks.mark("history written")
                         self.transcriptionTask = nil
                         self.transcribingAudioFileName = nil
-                        self.lastTranscript = trimmedFinalTranscript
+                        // An abandoned utterance finishes with an EMPTY final
+                        // transcript on purpose, and overwriting with it would
+                        // disable Paste Again (`copyLastTranscriptToPasteboard`
+                        // returns immediately on an empty `lastTranscript`) —
+                        // removing the one recovery path from an abandonment the
+                        // speaker did not intend. Keep the raw text instead.
+                        if case .abandonedByTrailingMarker = result.outcome {
+                            self.lastTranscript = bootstrapTranscript
+                        } else {
+                            self.lastTranscript = trimmedFinalTranscript
+                        }
                         self.isTranscribing = false
                         self.endCriticalDictationActivity()
                         self.debugStatusMessage = "Done"
