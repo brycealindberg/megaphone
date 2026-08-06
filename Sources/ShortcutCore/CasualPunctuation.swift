@@ -24,7 +24,12 @@ enum CasualPunctuation {
         "oh", "ah", "aww", "aw", "well", "so", "bet", "word", "aight", "ight",
         "alright", "sure", "damn", "dang", "omg", "oof", "hmm", "hm", "wait",
         "fr", "ngl", "tbh", "anyways", "anyway", "cool", "nice", "bruh",
-        "bro", "dude", "man", "sheesh", "yikes"
+        "bro", "dude", "man", "sheesh", "yikes",
+        // Added 2026-08-05 after Bryce dictated a comma test whose leading
+        // "Also," survived. Measured over the 120 real-voice cases: 3 more
+        // commas removed, all 3 agreeing with his own edits, no new false
+        // positives — precision 92.3% -> 92.6%.
+        "also"
     ]
 
     /// Longest message (in words) still treated as a short chat line, where a
@@ -32,10 +37,17 @@ enum CasualPunctuation {
     /// likely to be doing real work, so it is left alone.
     static let maxShortMessageWords = 10
 
+    /// Politeness particles that get a spoken pause in front of them, which the
+    /// recogniser writes as a comma and Bryce then deletes. `, please` was the
+    /// single most common unwanted comma in the corpus — 17 occurrences, more
+    /// than twice any other context.
+    static let politenessParticles = ["please", "though", "as well"]
+
     static func lighten(_ text: String) -> String {
         guard !text.isEmpty else { return text }
         var result = stripLeadingOpenerComma(text)
         result = stripShortMessageCommas(result)
+        result = stripPolitenessCommas(result)
         return result
     }
 
@@ -112,6 +124,34 @@ enum CasualPunctuation {
             mutable.deleteCharacters(in: match.range)
         }
         return collapseSpaces(mutable as String)
+    }
+
+    // MARK: - politeness particles
+
+    /// "Let me know, please" -> "Let me know please". Unlike the rule above this
+    /// is not length-gated, because a trailing "please" reads the same in a long
+    /// sentence as a short one, and the length gate is exactly why Bryce's own
+    /// 15-word comma test came back unchanged.
+    ///
+    /// Measured over the 120 real-voice cases, on top of the opener and
+    /// short-message rules: 20 more commas removed, 16 of them agreeing with his
+    /// edits and 4 not — 101 removed at 90.1% precision, against 81 at 92.6%
+    /// without it. Kept because the 4 are commas he sometimes writes either way,
+    /// while the 16 are ones he consistently deletes.
+    ///
+    /// Cannot touch a number ("1,000 please" has no comma directly before the
+    /// word) and cannot remove anything but a comma.
+    static func stripPolitenessCommas(_ text: String) -> String {
+        let alternation = politenessParticles
+            .map { NSRegularExpression.escapedPattern(for: $0).replacingOccurrences(of: " ", with: #"\s+"#) }
+            .joined(separator: "|")
+        let pattern = #"\s*,\s*(?=(?:"# + alternation + #")(?![\p{L}\p{N}]))"#
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else {
+            return text
+        }
+        let ns = NSMutableString(string: text)
+        regex.replaceMatches(in: ns, range: NSRange(location: 0, length: ns.length), withTemplate: " ")
+        return collapseSpaces(ns as String)
     }
 
     // MARK: - helpers

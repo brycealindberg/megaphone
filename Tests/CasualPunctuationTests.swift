@@ -16,6 +16,52 @@ enum CasualPunctuationTests {
         testLeavesLongSentenceCommaAlone()
         testDoesNotMatchOpenerAsPrefixOfAnotherWord()
         testEmptyAndNoComma()
+        testAlsoIsAnOpener()
+        testPolitenessCommas()
+        testPolitenessRuleIsNotLengthGated()
+        testPolitenessRuleTouchesNothingElse()
+    }
+
+    /// Bryce's own comma test came back unchanged because "Also," was not an
+    /// opener and the message was over the short-message length gate.
+    private static func testAlsoIsAnOpener() {
+        expect(CasualPunctuation.lighten("Also, don't forget the invoice"),
+               "Also don't forget the invoice")
+        expect(CasualPunctuation.lighten("also, one more thing"), "also one more thing")
+        // Not an opener when it is not opening.
+        expect(CasualPunctuation.lighten("Send the contract and also, the invoice, tomorrow morning please"),
+               "Send the contract and also, the invoice, tomorrow morning please")
+    }
+
+    private static func testPolitenessCommas() {
+        expect(CasualPunctuation.lighten("Let me know, please"), "Let me know please")
+        expect(CasualPunctuation.lighten("Send it over, though"), "Send it over though")
+        expect(CasualPunctuation.lighten("Bring the charger, as well"), "Bring the charger as well")
+    }
+
+    /// The reported case end to end: 15 words, so the short-message rule cannot
+    /// fire and both commas used to survive.
+    private static func testPolitenessRuleIsNotLengthGated() {
+        expect(
+            CasualPunctuation.lighten("Also, this is a test to see if there's commas or not. Let me know, please."),
+            "Also this is a test to see if there's commas or not. Let me know please."
+        )
+    }
+
+    private static func testPolitenessRuleTouchesNothingElse() {
+        // A number comma has no particle after it.
+        expect(CasualPunctuation.lighten("wire 1,000 please"), "wire 1,000 please")
+        // "please" not preceded by a comma is untouched.
+        expect(CasualPunctuation.lighten("please send the deck over when you can"),
+               "please send the deck over when you can")
+        // A word that merely begins like a particle does not count. Kept long
+        // enough that the short-message rule cannot fire and take the credit.
+        expect(
+            CasualPunctuation.lighten("the tone of the whole thing was, pleasant enough for the client call on Monday"),
+            "the tone of the whole thing was, pleasant enough for the client call on Monday"
+        )
+        // Question marks and capitals are structurally out of reach.
+        expect(CasualPunctuation.lighten("Can you check it, please?"), "Can you check it please?")
     }
 
     /// The reported case: "OK, bet I will" should read "OK bet I will".
