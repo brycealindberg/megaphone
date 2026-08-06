@@ -82,6 +82,18 @@ enum SelfCorrectionResolver {
             return resolvingTrailingAbandon(text, ns: ns, marker: marker)
         }
 
+        // The marker ENDS ITS OWN SENTENCE and the speaker kept going:
+        // "Okay scratch that. Okay I did it." Measured 2026-08-05 — this is what
+        // Bryce actually does, and the first version of this only handled the
+        // marker ending the whole dictation, so it did nothing here.
+        //
+        // A full stop is what separates this from a value swap. "Thursday, I
+        // mean Wednesday" never puts a terminator between the marker and the
+        // correction, so those still fall through to the opener gate below.
+        if startsANewSentence(tail) {
+            return resolvingTrailingAbandon(text, ns: ns, marker: marker)
+        }
+
         let after = tail.trimmingCharacters(in: CharacterSet(charactersIn: " ,;:—-\t\n"))
         guard !after.isEmpty, beginsWithRestartOpener(after) else { return text }
 
@@ -120,7 +132,44 @@ enum SelfCorrectionResolver {
             endingAt: marker.location + marker.length, in: ns
         ) else { return text }
         guard endsAtClauseBoundary(ns.substring(to: phrase.location)) else { return text }
-        return normalizeSpacing(ns.substring(to: sentenceStart(before: phrase.location, in: ns)))
+        let kept = ns.substring(to: sentenceStart(before: phrase.location, in: ns))
+        // Anything the speaker said AFTER the abandoned sentence is theirs and
+        // survives: only the marker's own sentence is dropped. Skips the marker's
+        // terminator and the space behind it.
+        var resume = phrase.location + phrase.length
+        while resume < ns.length,
+              let s = UnicodeScalar(ns.character(at: resume)),
+              CharacterSet.whitespacesAndNewlines.contains(s)
+                || CharacterSet.punctuationCharacters.contains(s) {
+            resume += 1
+        }
+        let tail = resume < ns.length ? ns.substring(from: resume) : ""
+        guard !tail.isEmpty else { return normalizeSpacing(kept) }
+        return normalizeSpacing(kept.isEmpty ? capitalizeFirst(tail) : kept + " " + tail)
+    }
+
+    /// Whether the text right after a marker is a single sentence terminator
+    /// followed by a genuinely new sentence.
+    ///
+    /// All three conditions carry weight:
+    ///   - **exactly one** terminator, so an ellipsis does not qualify.
+    ///     "Actually, let me start over... and continue" is one sentence with a
+    ///     pause in it, and dropping its first half loses what the speaker said.
+    ///   - a **capital** afterwards, the other half of that same guard: the
+    ///     recogniser capitalises sentence starts, and "... and continue" does
+    ///     not get one.
+    ///   - a terminator at all, which is what separates this from a value swap:
+    ///     "Thursday, I mean Wednesday" never puts a full stop between the
+    ///     marker and the correction.
+    private static func startsANewSentence(_ tail: String) -> Bool {
+        var rest = Substring(tail).drop(while: { $0.isWhitespace })
+        guard let terminator = rest.first,
+              terminator == "." || terminator == "!" || terminator == "?" else { return false }
+        rest = rest.dropFirst()
+        if let next = rest.first, next == "." || next == "!" || next == "?" { return false }
+        rest = rest.drop(while: { $0.isWhitespace })
+        guard let opener = rest.first else { return false }
+        return opener.isUppercase
     }
 
     /// The longest `trailingAbandonMarkers` phrase whose match ends exactly at

@@ -25,6 +25,36 @@ enum SelfCorrectionResolverTests {
         testTrailingMarkerToleratesMissingComma()
         testOtherTrailingAbandonPhrases()
         testDecimalsAndAbbreviationsSurviveTheDrop()
+        testAbandonThenKeepTalking()
+        testEllipsisIsNotASentenceEnd()
+    }
+
+    /// The shape Bryce actually uses, found when the first version did nothing
+    /// for it: abandon a sentence and carry straight on. Only the marker's own
+    /// sentence goes; everything after it is his and survives.
+    private static func testAbandonThenKeepTalking() {
+        expect(SelfCorrectionResolver.resolve("Okay scratch that. Okay I did it."), "Okay I did it.")
+        expect(
+            SelfCorrectionResolver.resolve("Okay scratch that. Okay I did it. What's next?"),
+            "Okay I did it. What's next?"
+        )
+        expect(SelfCorrectionResolver.resolve("Okay, scratch that. What's next?"), "What's next?")
+        expect(
+            SelfCorrectionResolver.resolve("Send the invoice Friday. Scratch that. Send it Monday."),
+            "Send the invoice Friday. Send it Monday."
+        )
+    }
+
+    /// A full stop is what tells an abandonment from a value swap, so what
+    /// counts as one has to be exact: a single terminator followed by a capital.
+    /// An ellipsis is a pause inside one sentence, and treating it as an ending
+    /// deleted the first half of "Actually, let me start over... and continue".
+    private static func testEllipsisIsNotASentenceEnd() {
+        for s in ["Actually, let me start over... and continue",
+                  "Okay scratch that. and then leave",
+                  "let's meet Tuesday I mean Wednesday"] {
+            expect(SelfCorrectionResolver.resolve(s), s)
+        }
     }
 
     /// Found by review. `sentenceStart` used to scan back for any ".", so a
