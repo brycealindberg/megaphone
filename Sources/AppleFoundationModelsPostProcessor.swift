@@ -134,6 +134,20 @@ enum AppWritingContext: String, Equatable, Sendable {
             options: .regularExpression
         )
 
+        // Editors and terminals are settled on the APP alone, before anything
+        // that consults the window title. A terminal titles itself from the cwd
+        // or the running command, so a shell sitting in ~/Projects/slack-bridge
+        // used to classify as work chat and a whatsapp-bridge checkout as casual
+        // chat — which swaps the whole profile, register and prompt for a
+        // terminal. Title precedence still applies to everything else, and is
+        // deliberate there: a browser showing Slack IS work chat.
+        let codeApps = [
+            "terminal", "iterm", "ghostty", "warp", "xcode", "visual studio code",
+            "vscode", "cursor", "zed"
+        ]
+        if codeApps.contains(where: identity.contains) {
+            return .codeOrTerminal
+        }
         if all.contains("slack") || all.contains("msteams") || all.contains("microsoft teams") {
             return .workChat
         }
@@ -144,13 +158,6 @@ enum AppWritingContext: String, Equatable, Sendable {
         if bundle.contains("com.apple.mail") || app == "mail"
             || allWithoutAddresses.contains("outlook") || allWithoutAddresses.contains("gmail") {
             return .email
-        }
-        let codeApps = [
-            "terminal", "iterm", "ghostty", "warp", "xcode", "visual studio code",
-            "vscode", "cursor", "zed"
-        ]
-        if codeApps.contains(where: identity.contains) {
-            return .codeOrTerminal
         }
         let documentApps = ["pages", "notes", "obsidian", "notion", "microsoft word"]
         if documentApps.contains(where: identity.contains) || title.contains("google docs") {

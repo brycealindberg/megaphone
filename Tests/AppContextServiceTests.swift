@@ -279,6 +279,31 @@ struct AppContextServiceTests {
             AppWritingContext.classify(appName: "Safari", bundleIdentifier: "com.apple.Safari", windowTitle: "Discord | #general") == .casualChat,
             "Discord in a browser should use casual-chat writing context"
         )
+        // A terminal titles itself from the cwd or the running command, so the
+        // title is not evidence about the destination the way a browser tab is.
+        // Working in a repo called slack-bridge used to hand the dictation the
+        // work-chat profile, register and prompt.
+        expect(
+            AppWritingContext.classify(
+                appName: "Ghostty", bundleIdentifier: "com.mitchellh.ghostty",
+                windowTitle: "~/Projects/slack-bridge — nvim"
+            ) == .codeOrTerminal,
+            "a terminal in a slack-named directory is still a terminal"
+        )
+        expect(
+            AppWritingContext.classify(
+                appName: "Ghostty", bundleIdentifier: "com.mitchellh.ghostty",
+                windowTitle: "whatsapp-bridge: npm run dev"
+            ) == .codeOrTerminal,
+            "a terminal running a whatsapp-named command is still a terminal"
+        )
+        expect(
+            AppWritingContext.classify(
+                appName: "Cursor", bundleIdentifier: "com.todesktop.230313mzl4w4u92",
+                windowTitle: "gmail-sync.ts — outlook-importer"
+            ) == .codeOrTerminal,
+            "an editor with mail-named files open is still an editor"
+        )
         expect(
             AppWritingContext.classify(appName: "WhatsApp", bundleIdentifier: "net.whatsapp.WhatsApp", windowTitle: nil) == .casualChat,
             "WhatsApp should use casual-chat writing context"
