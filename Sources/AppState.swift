@@ -3327,6 +3327,12 @@ final class AppState: ObservableObject, @unchecked Sendable {
                     protectedTerms: vocabulary
                 )
             }
+            // After everything, including QuestionMark: a lone slash command is
+            // a command line, not a sentence, and the recogniser's trailing full
+            // stop stops it firing. Ungated by profile — "/omp" is a command in
+            // any destination, and this only ever removes one "." from a string
+            // that is nothing but a slash-command token.
+            t = SlashCommandLine.stripTerminalPeriod(t)
             return t
         }
 

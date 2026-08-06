@@ -36,6 +36,7 @@ struct AppContextServiceTests {
         CasualPunctuationTests.run()
         SelfCorrectionResolverTests.run()
         SpokenPunctuationTests.run()
+        SlashCommandLineTests.run()
         QuestionMarkTests.run()
         SentenceContinuationTests.run()
         DictationProfileTests.run()
