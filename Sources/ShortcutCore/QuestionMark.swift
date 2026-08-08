@@ -120,6 +120,35 @@ enum QuestionMark {
         // wh-question, but not an instructional infinitive ("how to reset …")
         // and not an exclamative ("What a mess", "How a build works").
         if whWords.contains(w0) {
+            // "when" is the one wh-word that opens a subordinate clause on a
+            // statement more often than it opens a question: "when I get back
+            // I'll look at it".
+            //
+            // Measured 2026-08-08 against 782 wh-initial sentences taken from
+            // Bryce's own accepted output, scored on whether HE kept a "?":
+            //
+            //     head    total   false+ before   after
+            //     when       75       47           1
+            //
+            // 46 fixed against 3 questions lost. The other heads are left
+            // alone, and that is measured too, not an omission: extending this
+            // same gate to every wh-word takes the whole set from 31 false
+            // positives to 20 — while taking false NEGATIVES from 10 to 122.
+            // "what I need is X" is a free relative and "which doesn't work" is
+            // a fragment, but both are rare next to the real questions the gate
+            // would silently stop punctuating. Do not widen this without
+            // re-running that measurement.
+            //
+            // Subject-auxiliary inversion is what separates the two. A question
+            // inverts — "when do I", "when is it", "when can we" — and the aux
+            // can sit a word or two back ("when exactly do you need it", "when
+            // the hell did that happen"). A subordinate clause keeps subject
+            // order and never inverts: "when I get back", "when the build
+            // finishes". So require an inversion somewhere, not just at w1.
+            if w0 == "when", !w1.isEmpty, !auxiliaries.contains(w1),
+               !hasInversion(in: words, after: 1) {
+                return false
+            }
             return w1 != "to" && !((w0 == "what" || w0 == "how") && (w1 == "a" || w1 == "an"))
         }
         // auxiliary + subject ("can you", "is this", "did we").
@@ -130,6 +159,29 @@ enum QuestionMark {
         if w0 == "you" || w0 == "u" || w0 == "ya" {
             if tagPredicates.contains(w1) { return true }
             if w1.hasSuffix("ing"), w1.count > 3 { return true }
+        }
+        return false
+    }
+
+    /// Subject-auxiliary inversion anywhere after `index` — "…can you send it",
+    /// "…did that happen", "…do you need it".
+    ///
+    /// Only the "when" rule needs this. Testing w1 alone would have thrown away
+    /// three shapes the shipped rule already got right: an adverb between the
+    /// wh-word and the aux ("when exactly do you need it"), an expletive ("when
+    /// the hell did that happen"), and a subordinate clause parked in front of a
+    /// real question ("when you get a chance can you send that over").
+    private static func hasInversion(in words: [String], after index: Int) -> Bool {
+        guard words.count > index + 2 else { return false }
+        let edges = CharacterSet(charactersIn: ".,!?;:'")
+        for i in (index + 1)..<(words.count - 1) {
+            let aux = words[i].lowercased().trimmingCharacters(in: edges)
+            let subject = words[i + 1].lowercased().trimmingCharacters(in: edges)
+            guard auxiliaries.contains(aux), subjects.contains(subject) else { continue }
+            // "…I'll do it", "…I'll have it done" — the same imperative pair the
+            // head-word check rejects at position 0, riding inside a main clause.
+            if imperativeHeads.contains(aux), imperativeObjects.contains(subject) { continue }
+            return true
         }
         return false
     }

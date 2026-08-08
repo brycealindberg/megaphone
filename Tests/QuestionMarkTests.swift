@@ -17,6 +17,8 @@ enum QuestionMarkTests {
         testEmptyAndNoQuestion()
         testImperativesAreNotQuestions()
         testExclamativesAreNotQuestions()
+        testWhenClauseStatementsUntouched()
+        testWhenQuestionsStillFire()
     }
 
     private static func testWhQuestions() {
@@ -98,6 +100,61 @@ enum QuestionMarkTests {
     private static func testEmptyAndNoQuestion() {
         expect("", "")
         expect("okay sounds good", "okay sounds good")
+    }
+
+    /// "when" is the one wh-word that opens a subordinate clause on a statement
+    /// more often than it opens a question. Measured before the inversion rule:
+    /// 23 of 126 fires were wrong, and all 23 were sentences starting on a
+    /// when-clause. Every line below got a "?" it should never have had.
+    private static func testWhenClauseStatementsUntouched() {
+        for s in ["when I get back I'll look at it",
+                  "when you're done let me know",
+                  "when we land I'll text you",
+                  "when they reply forward it to me",
+                  "when it finishes send me the log",
+                  "when he calls back tell him I'm out",
+                  "when that happens we roll it back",
+                  "when this lands I'll close the ticket",
+                  "when there is time I'll clean it up",
+                  // The main clause's own "do it" / "have it done" is the same
+                  // imperative pair the head-word check rejects at position 0 —
+                  // it must not read as the inversion that rescues a "when".
+                  "when I have a minute I'll do it",
+                  "when I get home I'll have it done",
+                  // Identical clause, noun-phrase subject instead of a pronoun.
+                  "when the build finishes I'll ping you",
+                  "when Merrick replies forward it to me"] {
+            expect(s, s)
+        }
+        // Only the last sentence is judged, and up to two interjections are
+        // stripped before the head word is read — the rule has to survive both.
+        expect("I'll be out. when I get back I'll look at it",
+               "I'll be out. when I get back I'll look at it")
+        expect("so when I get back I'll look at it", "so when I get back I'll look at it")
+    }
+
+    /// Subject-auxiliary inversion is what makes a "when" interrogative, and it
+    /// does not have to sit directly behind the wh-word — so the check scans the
+    /// sentence rather than testing the second word alone.
+    private static func testWhenQuestionsStillFire() {
+        expect("when do I get access", "when do I get access?")
+        expect("when is the demo", "when is the demo?")
+        expect("when can we talk", "when can we talk?")
+        expect("when are you free", "when are you free?")
+        expect("when should I follow up", "when should I follow up?")
+        expect("when does the build finish", "when does the build finish?")
+        // Inversion a word or two back: an adverb, an expletive, or an entire
+        // subordinate clause parked in front of the real question.
+        expect("when exactly do you need it", "when exactly do you need it?")
+        expect("when the hell did that happen", "when the hell did that happen?")
+        expect("when you get a chance can you send that over",
+               "when you get a chance can you send that over?")
+        expect("when he gets here what do we do", "when he gets here what do we do?")
+        expect("hey when do I get access", "hey when do I get access?")
+        // Neighbours the "when" rule must leave exactly as they were: the
+        // instructional infinitive, and a bare "when" with nothing to judge.
+        expect("when to send it", "when to send it")
+        expect("when", "when?")
     }
 
     // MARK: helpers
