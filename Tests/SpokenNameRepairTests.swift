@@ -9,6 +9,11 @@ enum SpokenNameRepairTests {
         testLowercaseWordsAreNeverRepaired()
         testShortAndEmptyInputsAreIgnored()
         testUnrelatedNamesNeverMatch()
+        testPossessiveOnScreenNeverAddsOne()
+        testPossessiveScreenTermStillSuppliesTheStem()
+        testPlainSNamesAreNotStripped()
+        testSpokenPossessiveIsUntouched()
+        testBarePossessiveScreenTermIsIgnored()
     }
 
     /// Every case here is a transcript the real recogniser actually produced
@@ -119,6 +124,64 @@ enum SpokenNameRepairTests {
             SpokenNameRepair.apply(text, names: ["Marek Vasiliev", "Dana Okonkwo", "LedgerIQ"]) == text,
             "unrelated names matched"
         )
+    }
+
+    /// Reported 2026-08-08 from real pipeline history: two of twenty
+    /// consecutive dictations had a correctly-heard name rewritten into the
+    /// possessive, because a trailing "'s" is one edit away and the
+    /// capitalisation guard cannot help when both forms are proper nouns.
+    private static func testPossessiveOnScreenNeverAddsOne() {
+        for (text, screen) in [
+            ("Can you send Merrick an update in the group chat, please?", "Merrick's"),
+            ("make sure what Alex and Whitfield talked about is in there", "Whitfield's"),
+            // Meaning change, not just a spelling one.
+            ("Trelawney is here today", "Trelawney's"),
+            ("Okonkwo said she would come", "Okonkwo's"),
+            // The curly apostrophe most UIs actually render.
+            ("Trelawney is here today", "Trelawney\u{2019}s"),
+        ] {
+            expect(
+                SpokenNameRepair.apply(text, names: [screen]) == text,
+                "possessive screen term rewrote \"\(text)\""
+            )
+        }
+    }
+
+    /// The stem still has to work — stripping the possessive must not disarm
+    /// the pass, only stop it inventing grammar.
+    private static func testPossessiveScreenTermStillSuppliesTheStem() {
+        expect(
+            SpokenNameRepair.apply("send it to Merick today", names: ["Merrick's"])
+                == "send it to Merrick today",
+            "stem from a possessive screen term did not repair the mishear"
+        )
+    }
+
+    /// Only an apostrophe form is stripped. A name that merely ends in s is a
+    /// name.
+    private static func testPlainSNamesAreNotStripped() {
+        expect(
+            SpokenNameRepair.apply("ask Jonnes about it", names: ["Jones"]) == "ask Jones about it",
+            "a name ending in s stopped being repaired"
+        )
+        expect(
+            SpokenNameRepair.apply("I met Travvis yesterday", names: ["Travis"]) == "I met Travis yesterday",
+            "Travis stopped being repaired"
+        )
+    }
+
+    /// The reverse direction never needed a guard and must stay that way: a
+    /// spoken possessive short-circuits on the substring check.
+    private static func testSpokenPossessiveIsUntouched() {
+        let text = "I read Marek's note"
+        expect(SpokenNameRepair.apply(text, names: ["Marek"]) == text, "spoken possessive was rewritten")
+    }
+
+    /// A screen term that is nothing but a possessive must not become an
+    /// empty-string target.
+    private static func testBarePossessiveScreenTermIsIgnored() {
+        let text = "hello there"
+        expect(SpokenNameRepair.apply(text, names: ["'s", "\u{2019}s", ""]) == text, "degenerate screen term matched")
     }
 
     private static func expect(_ condition: Bool, _ message: String, file: StaticString = #file, line: UInt = #line) {

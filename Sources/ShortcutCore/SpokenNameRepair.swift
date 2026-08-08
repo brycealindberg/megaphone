@@ -34,7 +34,8 @@ enum SpokenNameRepair {
         var result = text
 
         // Longest first: "Marek Vasiliev" should win before "Marek" gets a turn.
-        for name in names.sorted(by: { $0.count > $1.count }) {
+        for rawName in names.sorted(by: { $0.count > $1.count }) {
+            let name = droppingPossessive(rawName)
             guard name.count >= minimumNameLength else { continue }
             let normalizedName = normalize(name)
             guard !normalizedName.isEmpty, !blocked.contains(normalizedName) else { continue }
@@ -43,6 +44,32 @@ enum SpokenNameRepair {
             result = replacingBestMatch(in: result, with: name)
         }
         return result
+    }
+
+    /// A screen name is only ever a *spelling*. A possessive is grammar, and it
+    /// belongs to the sentence the speaker actually said — so "Merrick's" on
+    /// screen contributes the target "Merrick", never the possessive itself.
+    ///
+    /// Without this the repair rewrites correctly-heard names, because a
+    /// trailing "'s" is exactly one edit away and the capitalisation guard is
+    /// powerless here: both forms are proper nouns, so the rule that stops
+    /// ordinary words becoming names cannot see this at all. Two of twenty
+    /// consecutive real dictations were corrupted before it was caught;
+    /// reproduced against the shipped code as —
+    ///
+    ///     "send Merrick an update"      -> "send Merrick's an update"
+    ///     "Trelawney is here today"     -> "Trelawney's here today"
+    ///     "Okonkwo said she would come" -> "Okonkwo's said she would come"
+    ///
+    /// Only an apostrophe form is stripped, so ordinary names that simply end
+    /// in s ("Travis", "Jones", "Rogers") are untouched. The reverse direction
+    /// never needed a guard: a screen "Marek" against a spoken "Marek's"
+    /// already short-circuits on the substring check above.
+    private static func droppingPossessive(_ name: String) -> String {
+        for suffix in ["'s", "\u{2019}s", "'S", "\u{2019}S"] where name.hasSuffix(suffix) {
+            return String(name.dropLast(suffix.count))
+        }
+        return name
     }
 
     // MARK: Matching
