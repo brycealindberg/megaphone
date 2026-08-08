@@ -19,6 +19,8 @@ enum CasualPunctuationTests {
         testNeverTouchesTextWithNoComma()
         testPolitenessParticleMustEndTheSentence()
         testOpenerCannotUnprotectAList()
+        testListStartingOnAnOpenerWordKeepsEveryComma()
+        testEnumerationGuardDoesNotShieldRealOpeners()
         testLengthGateCountsAllWhitespace()
         testStableOnOrdinaryText()
         testAlsoIsAnOpener()
@@ -260,14 +262,97 @@ enum CasualPunctuationTests {
             CasualPunctuation.lighten("Okay, I grabbed eggs, milk and bread"),
             "Okay I grabbed eggs, milk and bread"
         )
-        // KNOWN RESIDUAL, deliberately asserted as-is rather than left silent:
-        // the opener rule still eats the first comma when a list ITEM happens to
-        // be an opener word ("word", "man", "no", "so" are all ordinary nouns or
-        // adverbs). The list's remaining commas are now safe, which is the part
-        // this fix owns. Closing it properly means splitting `leadingOpeners` by
-        // register so the slang tokens only apply in casual chat — a real change
-        // that needs its own measurement, not a guess.
-        expect(CasualPunctuation.lighten("Word, Excel, and PowerPoint"), "Word Excel, and PowerPoint")
+        // The residual this test used to assert — "Word, Excel, and PowerPoint"
+        // coming out as "Word Excel, and PowerPoint" — is closed as of
+        // 2026-08-07. See testListStartingOnAnOpenerWordKeepsEveryComma.
+        expect(CasualPunctuation.lighten("Word, Excel, and PowerPoint"), "Word, Excel, and PowerPoint")
+    }
+
+    /// CHANGED 2026-08-07, and deliberately. `testOpenerCannotUnprotectAList`
+    /// used to assert the opposite of the first line here, as a KNOWN RESIDUAL:
+    /// the opener rule was the one rule never given the `listProtected` verdict,
+    /// so it ate the FIRST comma of any list whose first item is also an opener
+    /// word — "word", "man", "no", "so", "well", "nice" are ordinary nouns and
+    /// adverbs. Probed against the shipped file before the fix:
+    ///
+    ///     "Word, Excel, and PowerPoint"          -> "Word Excel, and PowerPoint"
+    ///     "Word, Excel, PowerPoint and Outlook"  -> "Word Excel, PowerPoint and Outlook"
+    ///     "Man, Kestrel, and Whitfield"          -> "Man Kestrel, and Whitfield"
+    ///
+    /// while the identical lists starting on a non-opener came through
+    /// untouched, which is what makes this a defect in the rule rather than a
+    /// judgement about lists. The old comment proposed splitting
+    /// `leadingOpeners` by register; that is still unmeasured and still not
+    /// done. This is the narrower fix: the opener rule now consults the same
+    /// list verdict the short-message rule already had, and additionally
+    /// requires the text to be nothing but short enumerated items.
+    private static func testListStartingOnAnOpenerWordKeepsEveryComma() {
+        expect(CasualPunctuation.lighten("Word, Excel, and PowerPoint"),
+               "Word, Excel, and PowerPoint")
+        // No Oxford comma: the coordinator joins the final pair instead.
+        expect(CasualPunctuation.lighten("Word, Excel, PowerPoint and Outlook"),
+               "Word, Excel, PowerPoint and Outlook")
+        // Other openers that are ordinary words, and "or" as the coordinator.
+        expect(CasualPunctuation.lighten("Man, Kestrel, and Whitfield"),
+               "Man, Kestrel, and Whitfield")
+        expect(CasualPunctuation.lighten("No, Kestrel, or Whitfield"),
+               "No, Kestrel, or Whitfield")
+        // Two-word items still read as items, and a numeric item is neutral.
+        expect(CasualPunctuation.lighten("Word, Adobe Illustrator, and PowerPoint"),
+               "Word, Adobe Illustrator, and PowerPoint")
+        // A digit-initial item is neutral, not lowercase. (Written "365 Suite"
+        // on purpose: a comma directly after a digit is read as a NUMBER comma
+        // by every rule in this file, so "Word, 365, and Teams" never reaches
+        // the list logic at all — a pre-existing property of the "1,000" guard.)
+        expect(CasualPunctuation.lighten("Word, 365 Suite, and Teams"),
+               "Word, 365 Suite, and Teams")
+        // The control: the same shape not starting on an opener was always safe,
+        // and must stay that way.
+        expect(CasualPunctuation.lighten("Excel, Word, and PowerPoint"),
+               "Excel, Word, and PowerPoint")
+        // KNOWN RESIDUAL, asserted rather than left silent: an all-lowercase
+        // list still loses its first comma, because dropping the capitalisation
+        // signal is what would cost the two genuine openers in
+        // testEnumerationGuardDoesNotShieldRealOpeners. Rarer than the shape
+        // above — it needs the first item to be one of ~60 slang tokens AND the
+        // whole list lowercase — and closing it needs a measurement.
+        expect(CasualPunctuation.lighten("well, pump, or pipe"), "well pump, or pipe")
+    }
+
+    /// The other direction, which is the whole risk of the fix above: a genuine
+    /// opener must still lose its comma, including when the sentence behind it
+    /// contains a real list.
+    private static func testEnumerationGuardDoesNotShieldRealOpeners() {
+        expect(CasualPunctuation.lighten("Okay, so I think we should ship it"),
+               "Okay so I think we should ship it")
+        // Sentence that CONTAINS a list. The chunk "I grabbed eggs" is three
+        // words, which is exactly why the item gate is two and not three.
+        expect(CasualPunctuation.lighten("Okay, I grabbed eggs, milk, and bread"),
+               "Okay I grabbed eggs, milk, and bread")
+        // Short chunks, but no coordinating and/or/nor closing them, so this is
+        // stacked discourse and not an enumeration.
+        expect(CasualPunctuation.lighten("Yeah, for sure, I'll send it tonight"),
+               "Yeah for sure I'll send it tonight")
+        // Sentence punctuation inside a chunk means prose, not items.
+        expect(
+            CasualPunctuation.lighten("Also, this is a test to see if there's commas or not. Let me know, please."),
+            "Also this is a test to see if there's commas or not. Let me know please."
+        )
+        // A number comma is not an item separator.
+        expect(CasualPunctuation.lighten("Bet, it's 2,500 total"), "Bet it's 2,500 total")
+        // The capitalisation signal. A dictation capitalises its first word
+        // whatever that word is, so only the items BEHIND the first say
+        // anything: lowercase ones mean the opener is an opener.
+        expect(CasualPunctuation.lighten("Okay, eggs, milk, and bread"),
+               "Okay eggs, milk, and bread")
+        expect(CasualPunctuation.lighten("Anyway, gym, and groceries"),
+               "Anyway gym, and groceries")
+        // A greeting is carved back out of the guard even when the names behind
+        // it are capitalised: the same 9,804-dictation measurement that keeps
+        // "Hey Dana," says a BARE greeting comma is cut, 54 to 15.
+        expect(CasualPunctuation.lighten("Hi, Dana, and Marek"), "Hi Dana, and Marek")
+        expect(CasualPunctuation.lighten("Hey, Kestrel, and Whitfield"),
+               "Hey Kestrel, and Whitfield")
     }
 
     /// The length gate split on spaces and newlines only, so a tab-separated
@@ -295,7 +380,10 @@ enum CasualPunctuationTests {
                   "no worries man, all good",
                   "Let me know, please",
                   "def run():\n    return 1",
-                  "grab eggs, milk, and bread"] {
+                  "grab eggs, milk, and bread",
+                  // Added 2026-08-07 with the enumeration guard: this one now
+                  // comes back untouched, so it must survive a second pass too.
+                  "Word, Excel, and PowerPoint"] {
             let once = CasualPunctuation.lighten(s)
             expect(CasualPunctuation.lighten(once), once)
         }
