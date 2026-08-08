@@ -46,6 +46,7 @@ struct AppContextServiceTests {
         SpokenMoneyTests.run()
         ScreenVocabularyTests.run()
         SpokenNameRepairTests.run()
+        TranscriptLogTests.run()
         DictationQualityTests.run()
         SmartCleanupValidationTests.run()
         StructuredOutputUnwrapTests.run()

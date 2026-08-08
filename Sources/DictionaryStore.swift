@@ -31,6 +31,17 @@ struct DictionaryEntry: Codable, Identifiable, Equatable {
     /// discarded at the moment of learning, so 161 learned entries have no way
     /// back to what they were meant to fix.
     var observedSource: String?
+    /// How many times a hand-edit confirmed this term was MISHEARD.
+    ///
+    /// Deliberately not `observationCount`, which is written by two callers
+    /// with opposite meanings: `observe(candidateTerms:)` bumps it on every
+    /// successful dictation in which the term merely appears. Measured
+    /// 2026-08-02 against the real store — one mishearing followed by two
+    /// correct dictations leaves `observationCount == 3`, so a gate reading it
+    /// is satisfied by evidence the correction is NOT needed. This field is
+    /// touched only on the edit path, and only when the edit is more than a
+    /// change of case.
+    var misheardCount: Int
 
     init(
         id: UUID = UUID(),
@@ -43,7 +54,8 @@ struct DictionaryEntry: Codable, Identifiable, Equatable {
         usageCount: Int = 0,
         createdAt: Date = Date(),
         updatedAt: Date = Date(),
-        observedSource: String? = nil
+        observedSource: String? = nil,
+        misheardCount: Int = 0
     ) {
         self.id = id
         self.term = term
@@ -56,6 +68,7 @@ struct DictionaryEntry: Codable, Identifiable, Equatable {
         self.createdAt = createdAt
         self.updatedAt = updatedAt
         self.observedSource = observedSource
+        self.misheardCount = misheardCount
     }
 
     /// Entries stored before starring/usage ranking shipped lack these keys;
@@ -73,6 +86,7 @@ struct DictionaryEntry: Codable, Identifiable, Equatable {
         createdAt = try container.decode(Date.self, forKey: .createdAt)
         updatedAt = try container.decode(Date.self, forKey: .updatedAt)
         observedSource = try container.decodeIfPresent(String.self, forKey: .observedSource)
+        misheardCount = try container.decodeIfPresent(Int.self, forKey: .misheardCount) ?? 0
     }
 
     /// Prompt-facing ranking: starred terms first, then most-used, then
@@ -197,6 +211,86 @@ final class DictionaryStore: ObservableObject {
 
     /// Projection consumed by the existing newline-delimited vocabulary pipeline.
     var activeTermsText: String { activeTerms.joined(separator: "\n") }
+
+    /// A learned correction the user has confirmed often enough to be worth
+    /// offering as a deterministic `word_corrections` rule.
+    struct PromotableCorrection: Equatable, Identifiable {
+        let heard: String
+        let written: String
+        let confirmations: Int
+
+        var id: String { heard.lowercased() }
+        var ruleLine: String { "\(heard) -> \(written)" }
+    }
+
+    /// Hand-edits needed before a correction is offered. An edit is deliberate,
+    /// but one can be a slip, and this rule will fire on every future dictation.
+    static let promotionThreshold = 2
+    static let dismissedPromotionsKey = "dismissed_correction_promotions_v1"
+
+    /// Suggestions the user has turned down. Without this a rejected candidate
+    /// is re-offered after every dictation that touches the term, which trains
+    /// the user to ignore the list.
+    var dismissedPromotions: Set<String> {
+        Set(defaults.stringArray(forKey: Self.dismissedPromotionsKey) ?? [])
+    }
+
+    func dismissPromotion(_ heard: String) {
+        // Same identity the parser and the existing-rule filter use, so a
+        // dismissal cannot be evaded by a diacritic.
+        let key = TranscriptTidier.CorrectionMapping.identity(ofSpoken: heard)
+        guard !key.isEmpty else { return }
+        var dismissed = dismissedPromotions
+        guard dismissed.insert(key).inserted else { return }
+        defaults.set(Array(dismissed).sorted(), forKey: Self.dismissedPromotionsKey)
+        objectWillChange.send()
+    }
+
+    /// Learned corrections worth offering to the user, best evidence first.
+    ///
+    /// **This returns suggestions, never an action.** A `word_corrections` rule
+    /// rewrites text unconditionally and forever, and the corpus check that
+    /// would justify one automatically — "fires >= 2 times with ZERO
+    /// counterexamples" — cannot run inside the app: a counterexample is a
+    /// dictation where the recogniser got it RIGHT, and until `TranscriptLog`
+    /// has accumulated some months there is nothing to count them in. So the
+    /// gates here establish *candidacy*, and the user is the gate that matters.
+    ///
+    /// - Parameter existingSpokenForms: left-hand sides already in the user's
+    ///   correction list, so a rule is never offered twice.
+    func promotableCorrections(existingSpokenForms: Set<String> = []) -> [PromotableCorrection] {
+        let identity = TranscriptTidier.CorrectionMapping.identity(ofSpoken:)
+        let blocked = Set(existingSpokenForms.map(identity)).union(dismissedPromotions)
+        return entries.compactMap { entry -> PromotableCorrection? in
+            guard entry.status != .rejected, entry.isEnabled else { return nil }
+            guard let heard = entry.observedSource?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !heard.isEmpty else { return nil }
+            let written = entry.term.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !written.isEmpty else { return nil }
+            // Capitalisation is not a mishearing. Entries written before
+            // `misheardCount` existed can still carry a case-only
+            // `observedSource`, so this is checked here and not only at the
+            // point of learning.
+            guard heard.lowercased() != written.lowercased() else { return nil }
+            // Never offer a pair the rule grammar cannot express. Such a rule
+            // would be dropped by the parser on accept, never join the existing
+            // set, and therefore be offered again forever.
+            guard TranscriptTidier.CorrectionMapping.isRepresentable(spoken: heard, replacement: written)
+            else { return nil }
+            guard !blocked.contains(identity(heard)) else { return nil }
+            // Entries that predate `misheardCount` decode as 0 but still hold
+            // proof of one hand-edit in `observedSource`. Credit that one, and
+            // no more — their real count is unrecoverable.
+            let confirmations = max(entry.misheardCount, 1)
+            guard confirmations >= Self.promotionThreshold else { return nil }
+            return PromotableCorrection(heard: heard, written: written, confirmations: confirmations)
+        }
+        .sorted {
+            $0.confirmations != $1.confirmations
+                ? $0.confirmations > $1.confirmations
+                : $0.heard.localizedCaseInsensitiveCompare($1.heard) == .orderedAscending
+        }
+    }
 
     @discardableResult
     func addManual(_ term: String, at date: Date = Date()) throws -> DictionaryEntry {
@@ -374,10 +468,20 @@ final class DictionaryStore: ObservableObject {
             // Same word already known. A case-only fix is safe to apply
             // immediately: it is not new vocabulary, just the right spelling of
             // a term the user already keeps.
-            if correction.isCaseOnly, entries[index].term != written {
-                entries[index].term = written
-                entries[index].updatedAt = date
-                persist()
+            //
+            // Both case-only outcomes return here. Falling through when the
+            // term already matched is how five of the six `observedSource`
+            // values on this Mac came to be capitalisation pairs — "And"->"and",
+            // "send"->"Send", "Like"->"like" — which are not mishearings and
+            // must never become deterministic rules. `isCaseOnly` is exactly
+            // `heard.lowercased() == written.lowercased()`, so it is the right
+            // discriminator and not an approximation of one.
+            if correction.isCaseOnly {
+                if entries[index].term != written {
+                    entries[index].term = written
+                    entries[index].updatedAt = date
+                    persist()
+                }
                 return entries[index].status
             }
             guard entries[index].source == .learned,
@@ -388,6 +492,22 @@ final class DictionaryStore: ObservableObject {
             // mishearing of the same word cannot overwrite it.
             if entries[index].observedSource == nil {
                 entries[index].observedSource = correction.heard
+            }
+            // Only the edit path, and only a real mishearing, reaches this —
+            // and only when the mishearing is the SAME one already recorded.
+            //
+            // `misheardCount` is stored per term but the pair it will be
+            // promoted as is (observedSource -> term), and observedSource is
+            // first-wins. Counting every correction of the term would let two
+            // DIFFERENT mishearings satisfy the two-confirmation gate for a
+            // pair that only ever occurred once: "beta -> alpha" followed by
+            // "gamma -> alpha" would offer `beta -> alpha` with 2
+            // confirmations. A second distinct mishearing is deliberately not
+            // tracked at all; it is not evidence for this pair.
+            if let recorded = entries[index].observedSource,
+               TranscriptTidier.CorrectionMapping.identity(ofSpoken: recorded)
+                   == TranscriptTidier.CorrectionMapping.identity(ofSpoken: correction.heard) {
+                entries[index].misheardCount += 1
             }
             entries[index].observationCount += 1
             if entries[index].observationCount >= Self.editLearningThreshold {
@@ -411,7 +531,10 @@ final class DictionaryStore: ObservableObject {
             observationCount: 1,
             createdAt: date,
             updatedAt: date,
-            observedSource: correction.heard
+            // A case-only fix on a term that is new to the dictionary is still
+            // only capitalisation. Record the term, never the "mishearing".
+            observedSource: correction.isCaseOnly ? nil : correction.heard,
+            misheardCount: correction.isCaseOnly ? 0 : 1
         ))
         persist()
         return Self.editLearningThreshold <= 1 ? .active : .suggested

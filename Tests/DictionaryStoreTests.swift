@@ -24,6 +24,190 @@ enum DictionaryStoreTests {
         testEditCaseFixAppliesImmediately()
         testEditCorrectionRespectsRejectionAndManual()
         testLearningRecordsTheMishearThatCausedIt()
+        testMisheardCountIsNotBumpedByTheRecogniserBeingRight()
+        testCaseOnlyFixesAreNeverMishearEvidence()
+        testPromotionNeedsTwoConfirmations()
+        testPromotionSkipsRulesTheUserAlreadyHas()
+        testDismissedPromotionStaysDismissed()
+        testLegacyEntriesCountAsOneConfirmationOnly()
+        testTwoDifferentMishearsDoNotConfirmOnePair()
+        testUnrepresentablePairsAreNeverOffered()
+        testExistingRuleBlockingFoldsDiacritics()
+    }
+
+    /// `misheardCount` lives on the term but the pair it promotes as is
+    /// (observedSource -> term), and observedSource is first-wins. Two
+    /// DIFFERENT mishearings must not jointly satisfy the gate for a pair that
+    /// only happened once.
+    private static func testTwoDifferentMishearsDoNotConfirmOnePair() {
+        let (store, defaults) = makeStore()
+        defer { clear(defaults) }
+
+        store.observeEditCorrection(DictationEditCorrection(heard: "beta", written: "alpha", isCaseOnly: false))
+        store.observeEditCorrection(DictationEditCorrection(heard: "gamma", written: "alpha", isCaseOnly: false))
+
+        guard let entry = store.entries.first(where: { $0.term == "alpha" }) else {
+            fatalError("entry missing")
+        }
+        expectEqual(entry.observedSource, "beta")   // first wins
+        expectEqual(entry.misheardCount, 1)         // gamma is not evidence for beta->alpha
+        expectEqual(store.promotableCorrections().isEmpty, true)
+
+        // The same mishearing again DOES confirm it.
+        store.observeEditCorrection(DictationEditCorrection(heard: "beta", written: "alpha", isCaseOnly: false))
+        expectEqual(store.promotableCorrections().first?.heard, "beta")
+    }
+
+    /// The rule grammar is line-oriented and has no escapes. A pair it cannot
+    /// express must never be offered — accepting it would either do nothing
+    /// (and be re-offered forever) or install a rule the user never saw.
+    private static func testUnrepresentablePairsAreNeverOffered() {
+        // Only pairs that can actually reach the store. `Self.cleaned` collapses
+        // whitespace on the WRITTEN side, so a newline can never survive there —
+        // but `observedSource` keeps the heard side verbatim, which is exactly
+        // where recogniser output arrives. The full character matrix is tested
+        // against `isRepresentable` directly in TranscriptTidierTests.
+        for (heard, written) in [
+            ("ht\nmo", "HTML"),     // would append a live `mo -> HTML`
+            ("a -> b", "HTML"),     // three components, silently dropped
+            ("htmo", "A -> B"),
+            ("a => b", "HTML"),
+            ("a \u{2192} b", "HTML"),
+            ("#tag", "HTML"),       // becomes a comment
+        ] {
+            let (store, defaults) = makeStore()
+            defer { clear(defaults) }
+            let fix = DictationEditCorrection(heard: heard, written: written, isCaseOnly: false)
+            store.observeEditCorrection(fix)
+            store.observeEditCorrection(fix)
+            expectEqual(store.promotableCorrections().isEmpty, true)
+        }
+    }
+
+    /// `parse` dedupes case- AND diacritic-insensitively, so the existing-rule
+    /// filter has to as well or it offers a duplicate the parser then discards.
+    private static func testExistingRuleBlockingFoldsDiacritics() {
+        let (store, defaults) = makeStore()
+        defer { clear(defaults) }
+
+        let fix = DictationEditCorrection(heard: "cafe\u{301}", written: "coffee", isCaseOnly: false)
+        store.observeEditCorrection(fix)
+        store.observeEditCorrection(fix)
+        expectEqual(store.promotableCorrections().isEmpty, false)
+        // An existing rule spelled without the accent must block it.
+        expectEqual(store.promotableCorrections(existingSpokenForms: ["CAFE"]).isEmpty, true)
+    }
+
+    /// The whole reason `misheardCount` exists. `observationCount` is bumped by
+    /// `observe(candidateTerms:)` on every successful dictation containing the
+    /// term, so a gate reading it is satisfied by the recogniser being RIGHT.
+    private static func testMisheardCountIsNotBumpedByTheRecogniserBeingRight() {
+        let (store, defaults) = makeStore()
+        defer { clear(defaults) }
+
+        let fix = DictationEditCorrection(heard: "htmo", written: "HTML", isCaseOnly: false)
+        store.observeEditCorrection(fix)
+        store.observe(candidateTerms: ["HTML"])
+        store.observe(candidateTerms: ["HTML"])
+        store.observe(candidateTerms: ["HTML"])
+
+        guard let entry = store.entries.first(where: { $0.term == "HTML" }) else {
+            fatalError("entry was not learned")
+        }
+        expectEqual(entry.misheardCount, 1)
+        // The old counter really does climb on success — this asserts the two
+        // fields have genuinely diverged rather than both being unused.
+        expectEqual(entry.observationCount > entry.misheardCount, true)
+    }
+
+    /// Five of the six `observedSource` values on the real Mac were
+    /// capitalisation pairs, because the case-only branch fell through when the
+    /// term already matched. "And" -> "and" must never become a rule.
+    private static func testCaseOnlyFixesAreNeverMishearEvidence() {
+        let (store, defaults) = makeStore()
+        defer { clear(defaults) }
+
+        // Term not yet known.
+        store.observeEditCorrection(DictationEditCorrection(heard: "And", written: "and", isCaseOnly: true))
+        // Term now known AND already spelled that way — the fall-through case.
+        store.observeEditCorrection(DictationEditCorrection(heard: "And", written: "and", isCaseOnly: true))
+
+        guard let entry = store.entries.first(where: { $0.term == "and" }) else {
+            fatalError("case-only entry missing")
+        }
+        expectEqual(entry.observedSource, nil)
+        expectEqual(entry.misheardCount, 0)
+        expectEqual(store.promotableCorrections().isEmpty, true)
+    }
+
+    private static func testPromotionNeedsTwoConfirmations() {
+        let (store, defaults) = makeStore()
+        defer { clear(defaults) }
+
+        let fix = DictationEditCorrection(heard: "htmo", written: "HTML", isCaseOnly: false)
+        store.observeEditCorrection(fix)
+        expectEqual(store.promotableCorrections().isEmpty, true)
+
+        store.observeEditCorrection(fix)
+        let promotable = store.promotableCorrections()
+        expectEqual(promotable.count, 1)
+        expectEqual(promotable.first?.heard, "htmo")
+        expectEqual(promotable.first?.written, "HTML")
+        expectEqual(promotable.first?.ruleLine, "htmo -> HTML")
+    }
+
+    private static func testPromotionSkipsRulesTheUserAlreadyHas() {
+        let (store, defaults) = makeStore()
+        defer { clear(defaults) }
+
+        let fix = DictationEditCorrection(heard: "htmo", written: "HTML", isCaseOnly: false)
+        store.observeEditCorrection(fix)
+        store.observeEditCorrection(fix)
+        // Case-insensitive: the correction list matches case-insensitively too.
+        expectEqual(store.promotableCorrections(existingSpokenForms: ["HTMO"]).isEmpty, true)
+    }
+
+    private static func testDismissedPromotionStaysDismissed() {
+        let (store, defaults) = makeStore()
+        defer { clear(defaults) }
+
+        let fix = DictationEditCorrection(heard: "htmo", written: "HTML", isCaseOnly: false)
+        store.observeEditCorrection(fix)
+        store.observeEditCorrection(fix)
+        expectEqual(store.promotableCorrections().count, 1)
+
+        store.dismissPromotion("HTMO")
+        expectEqual(store.promotableCorrections().isEmpty, true)
+        // Another confirmation must not resurrect it.
+        store.observeEditCorrection(fix)
+        expectEqual(store.promotableCorrections().isEmpty, true)
+    }
+
+    /// Entries written before `misheardCount` existed decode as 0 but still
+    /// prove one hand-edit. Credit exactly one — their real count is gone.
+    private static func testLegacyEntriesCountAsOneConfirmationOnly() {
+        let (store, defaults) = makeStore()
+        defer { clear(defaults) }
+
+        // Hand-built so the key is genuinely ABSENT. Encoding a DictionaryEntry
+        // would emit "misheardCount":0 and never exercise `decodeIfPresent`,
+        // so the test would pass even with back-compat broken.
+        let json = """
+        [{"id":"\(UUID().uuidString)","term":"HTML","source":"learned","status":"active",
+          "isEnabled":true,"observationCount":14,"starred":false,"usageCount":0,
+          "createdAt":0,"updatedAt":0,"observedSource":"HTMO"}]
+        """
+        let data = Data(json.utf8)
+        expectEqual(String(data: data, encoding: .utf8)!.contains("misheardCount"), false)
+        defaults.set(data, forKey: "entries")
+        let reloaded = DictionaryStore(
+            defaults: defaults, storageKey: "entries",
+            migrationKey: "migrated", legacyVocabularyKey: "legacy"
+        )
+        // One confirmation, and the threshold is two — so it waits for the next
+        // real edit rather than trusting a count it cannot verify.
+        expectEqual(reloaded.entries.first?.misheardCount, 0)
+        expectEqual(reloaded.promotableCorrections().isEmpty, true)
     }
 
     /// An edit is stronger evidence than a transcript sighting, but still not

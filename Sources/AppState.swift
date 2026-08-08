@@ -402,6 +402,46 @@ final class AppState: ObservableObject, @unchecked Sendable {
         }
     }
 
+    /// Left-hand sides already present, so a suggestion is never offered for a
+    /// rule the user already has.
+    var existingCorrectionSpokenForms: Set<String> {
+        Set(TranscriptTidier.CorrectionMapping.parse(wordCorrections).map(\.spoken))
+    }
+
+    /// Accept a learned correction as a real rule.
+    ///
+    /// Appends rather than rewrites: the correction list is hand-maintained and
+    /// most of it is comments recording how each rule was validated, and
+    /// round-tripping it through a parser would throw all of that away.
+    ///
+    /// `heard` is recogniser output and `written` is user-edited text, so
+    /// neither is a trusted literal and neither may be interpolated into the
+    /// rule grammar unchecked. A newline in `heard` would otherwise install a
+    /// rule the user never saw: "ht\nmo" appends two lines and the second one,
+    /// `mo -> HTML`, is a live rule. `isRepresentable` is the single gate for
+    /// that, shared with `promotableCorrections` so an unwritable pair is never
+    /// offered in the first place.
+    func acceptCorrectionSuggestion(heard: String, written: String) {
+        let heard = heard.trimmingCharacters(in: .whitespacesAndNewlines)
+        let written = written.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard TranscriptTidier.CorrectionMapping.isRepresentable(spoken: heard, replacement: written)
+        else { return }
+        let identity = TranscriptTidier.CorrectionMapping.identity(ofSpoken: heard)
+        guard !Set(existingCorrectionSpokenForms.map(TranscriptTidier.CorrectionMapping.identity(ofSpoken:)))
+            .contains(identity) else { return }
+
+        let header = "# Accepted from a learned suggestion."
+        var text = wordCorrections
+        if !text.contains(header) {
+            if !text.isEmpty, !text.hasSuffix("\n") { text += "\n" }
+            text += "\n\(header)\n"
+        } else if !text.isEmpty, !text.hasSuffix("\n") {
+            text += "\n"
+        }
+        text += "\(heard) -> \(written)\n"
+        wordCorrections = text
+    }
+
     @Published var smartCleanupMode: SmartCleanupMode {
         didSet {
             UserDefaults.standard.set(smartCleanupMode.rawValue, forKey: smartCleanupModeStorageKey)
@@ -4009,6 +4049,27 @@ final class AppState: ObservableObject, @unchecked Sendable {
             contextBundleIdentifier: context.bundleIdentifier,
             contextWindowTitle: context.windowTitle
         )
+        // The durable corpus. `pipelineHistory` below is capped at 20 entries
+        // and carries prompts and audio, so it can show the last few runs and
+        // nothing more; judging a candidate correction rule needs thousands of
+        // dictations and only the transcripts. Fire-and-forget on its own
+        // queue — this must not be able to slow or fail a dictation.
+        //
+        // Only rows where something was actually produced. Of this function's
+        // three callers, one is the delivery path and the other two pass an
+        // empty `postProcessedTranscript`: the error path, and the scratch/undo
+        // path, which carries a real raw transcript the user then withdrew. An
+        // abandoned dictation lands here the same way. Logging those would put
+        // "the pipeline deleted everything" examples into a corpus whose whole
+        // job is deciding what the pipeline should do.
+        if !postProcessedTranscript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            TranscriptLog.shared.record(
+                raw: rawTranscript,
+                final: postProcessedTranscript,
+                bundleIdentifier: context.bundleIdentifier,
+                mode: smartCleanupMode.rawValue
+            )
+        }
         do {
             let removedAudioFileNames = try pipelineHistoryStore.append(newEntry, maxCount: maxPipelineHistoryCount)
             for audioFileName in removedAudioFileNames {

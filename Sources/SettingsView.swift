@@ -1405,6 +1405,13 @@ struct DictionarySettingsView: View {
         store.entries.filter { $0.status == .suggested }
     }
 
+    /// Learned mishearings worth turning into a deterministic rule. Distinct
+    /// from `suggestions` above, which is new *vocabulary* awaiting approval —
+    /// this is a heard->written pair, and accepting it rewrites text.
+    private var correctionSuggestions: [DictionaryStore.PromotableCorrection] {
+        store.promotableCorrections(existingSpokenForms: appState.existingCorrectionSpokenForms)
+    }
+
     private var savedEntries: [DictionaryEntry] {
         let matches = store.entries.filter { $0.status == .active && matchesSearch($0) }
         return matches.filter(\.starred) + matches.filter { !$0.starred }
@@ -1520,6 +1527,22 @@ struct DictionarySettingsView: View {
                     }
                 }
 
+                if !correctionSuggestions.isEmpty {
+                    SettingsCard("Suggested Corrections", icon: "lightbulb") {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("Megaphone noticed you fixing these by hand. Adding one makes the replacement automatic from now on.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            VStack(spacing: 0) {
+                                ForEach(Array(correctionSuggestions.enumerated()), id: \.element.id) { index, suggestion in
+                                    if index > 0 { Divider() }
+                                    correctionSuggestionRow(suggestion)
+                                }
+                            }
+                        }
+                    }
+                }
+
                 SettingsCard("Exact Corrections", icon: "arrow.left.arrow.right") {
                     VStack(alignment: .leading, spacing: 8) {
                         Text("For words speech consistently hears the wrong way, add one replacement per line using “heard → wanted”.")
@@ -1537,6 +1560,36 @@ struct DictionarySettingsView: View {
             }
             .padding(24)
         }
+    }
+
+    @ViewBuilder
+    private func correctionSuggestionRow(_ suggestion: DictionaryStore.PromotableCorrection) -> some View {
+        HStack(spacing: 10) {
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 6) {
+                    Text(suggestion.heard)
+                        .font(.system(.body, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                    Image(systemName: "arrow.right")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                    Text(suggestion.written)
+                        .font(.system(.body, design: .monospaced).weight(.medium))
+                }
+                Text("You fixed this \(suggestion.confirmations) time\(suggestion.confirmations == 1 ? "" : "s")")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 8)
+            Button("Not this one") { store.dismissPromotion(suggestion.heard) }
+                .buttonStyle(.borderless)
+                .controlSize(.small)
+            Button("Add rule") {
+                appState.acceptCorrectionSuggestion(heard: suggestion.heard, written: suggestion.written)
+            }
+            .controlSize(.small)
+        }
+        .padding(.vertical, 7)
     }
 
     @ViewBuilder

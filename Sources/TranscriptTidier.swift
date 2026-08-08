@@ -37,13 +37,49 @@ struct TranscriptTidier {
                 let replacement = parts[1].trimmingCharacters(in: .whitespacesAndNewlines)
                 guard !spoken.isEmpty, !replacement.isEmpty else { return nil }
 
-                let identity = spoken.folding(
-                    options: [.caseInsensitive, .diacriticInsensitive],
-                    locale: .current
-                )
-                guard seen.insert(identity).inserted else { return nil }
+                guard seen.insert(identity(ofSpoken: spoken)).inserted else { return nil }
                 return CorrectionMapping(spoken: spoken, replacement: replacement)
             }
+        }
+
+        /// The one definition of "these two rules are the same rule".
+        ///
+        /// `parse` dedupes on this, so anything that decides whether a rule
+        /// already exists has to use it too. Lowercasing is not enough:
+        /// "café" and "cafe" fold together here, so a caller comparing with
+        /// `lowercased()` would offer a duplicate that `parse` then silently
+        /// discards, leaving a suggestion that can never be satisfied.
+        static func identity(ofSpoken spoken: String) -> String {
+            spoken
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+        }
+
+        /// Whether a heard/written pair can survive a round trip through this
+        /// grammar. The format is line-oriented and has no escape sequence, so
+        /// some pairs simply cannot be written down:
+        ///
+        ///   * a newline on either side splits one rule into two, and the
+        ///     fragment can parse as a REAL rule the user never approved —
+        ///     `heard: "ht\nmo"` installs `mo -> …`
+        ///   * `->`, `=>` or `→` on either side yields three components, which
+        ///     `parse` drops silently
+        ///   * a `#` at the start of the heard side makes the line a comment
+        ///
+        /// Callers must check this BEFORE offering a pair to the user, not just
+        /// before writing it: a rule that cannot be written also never lands in
+        /// the existing-rules set, so an unrepresentable suggestion would
+        /// otherwise be re-offered forever and do nothing when clicked.
+        static func isRepresentable(spoken: String, replacement: String) -> Bool {
+            let spoken = spoken.trimmingCharacters(in: .whitespacesAndNewlines)
+            let replacement = replacement.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !spoken.isEmpty, !replacement.isEmpty else { return false }
+            guard !spoken.hasPrefix("#") else { return false }
+            for side in [spoken, replacement] {
+                if side.rangeOfCharacter(from: .newlines) != nil { return false }
+                if side.contains("->") || side.contains("=>") || side.contains("→") { return false }
+            }
+            return true
         }
     }
 

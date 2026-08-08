@@ -11,6 +11,58 @@ enum TranscriptTidierTests {
         testCorrectionApplication()
         testReplacementTextIsNotProcessedAgain()
         testIdempotence()
+        testSpokenIdentityMatchesParserDeduplication()
+        testRepresentabilityRejectsWhatTheGrammarCannotExpress()
+    }
+
+    /// `identity(ofSpoken:)` must agree with what `parse` actually dedupes on,
+    /// or a caller using it to decide "do I already have this rule?" will offer
+    /// a duplicate that `parse` then silently discards.
+    private static func testSpokenIdentityMatchesParserDeduplication() {
+        let id = TranscriptTidier.CorrectionMapping.identity(ofSpoken:)
+        expect(id("CAFE") == id("cafe\u{301}"), "case+diacritic folding disagrees")
+        expect(id("  htmo  ") == id("htmo"), "identity is not trimmed")
+        expect(id("resume") != id("resumes"), "identity over-folds distinct terms")
+        // The behaviour it exists to mirror: parse keeps only the first of two
+        // spoken forms that fold together.
+        let parsed = TranscriptTidier.CorrectionMapping.parse("cafe -> coffee\nCAFE -> tea")
+        expect(parsed.count == 1, "parse kept \(parsed.count) rules for one folded key")
+        expect(parsed.first?.replacement == "coffee", "parse did not keep the first rule")
+    }
+
+    /// The grammar is line-oriented with no escapes, so some pairs cannot be
+    /// written down at all. Anything that builds a rule line has to know that
+    /// BEFORE offering it, not after.
+    private static func testRepresentabilityRejectsWhatTheGrammarCannotExpress() {
+        let ok = TranscriptTidier.CorrectionMapping.isRepresentable
+        expect(ok("htmo", "HTML"), "an ordinary pair was rejected")
+        expect(ok("c++", "C++"), "regex metacharacters are fine and must be allowed")
+        expect(ok("get hub", "GitHub"), "a multi-word spoken form must be allowed")
+
+        for (spoken, replacement, why) in [
+            ("ht\nmo", "HTML", "newline in spoken splits into a second live rule"),
+            ("htmo", "HT\nML", "newline in replacement truncates the rule"),
+            ("a -> b", "HTML", "arrow in spoken yields three components"),
+            ("htmo", "A -> B", "arrow in replacement yields three components"),
+            ("a => b", "HTML", "alternate separator in spoken"),
+            ("htmo", "A => B", "alternate separator in replacement"),
+            ("a \u{2192} b", "HTML", "unicode arrow in spoken"),
+            ("#tag", "HTML", "leading hash makes the line a comment"),
+            ("", "HTML", "empty spoken"),
+            ("htmo", "   ", "blank replacement"),
+        ] {
+            expect(!ok(spoken, replacement), "should have been rejected: \(why)")
+        }
+
+        // The property that matters: anything accepted here survives a round
+        // trip through the real parser as exactly one rule.
+        for (spoken, replacement) in [("htmo", "HTML"), ("c++", "C++"), ("get hub", "GitHub")] {
+            let line = "\(spoken) -> \(replacement)"
+            let parsed = TranscriptTidier.CorrectionMapping.parse(line)
+            expect(parsed.count == 1, "\(line) parsed to \(parsed.count) rules")
+            expect(parsed.first?.spoken == spoken && parsed.first?.replacement == replacement,
+                   "\(line) did not round-trip")
+        }
     }
 
     private static func testFillers() {
@@ -115,6 +167,15 @@ enum TranscriptTidierTests {
         for (input, expected) in cases {
             expectEqual(TranscriptTidier.tidy(input), expected)
         }
+    }
+
+    private static func expect(
+        _ condition: Bool,
+        _ message: String,
+        file: StaticString = #file,
+        line: UInt = #line
+    ) {
+        if !condition { fatalError("\(file):\(line): \(message)") }
     }
 
     private static func expectEqual<T: Equatable>(
