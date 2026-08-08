@@ -127,6 +127,15 @@ struct MenuBarView: View {
                     .lineLimit(3)
             }
 
+            if let dictionaryError = appState.dictionaryStorageErrorMessage {
+                Divider()
+                Text(dictionaryError)
+                    .foregroundStyle(.red)
+                    .font(.caption)
+                    .padding(.horizontal, 16)
+                    .lineLimit(4)
+            }
+
             if let error = appState.errorMessage {
                 Divider()
                 Text(error)

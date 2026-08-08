@@ -111,6 +111,69 @@ enum DictionaryStoreError: LocalizedError, Equatable {
     }
 }
 
+/// What was found in the stored Dictionary when it could not be read back, and
+/// where the original value was parked for safekeeping.
+///
+/// The distinction that matters is UNREADABLE vs ABSENT. On 2026-08-07 the
+/// `dictionary_entries_v1` value came back as a *string* where Data belongs;
+/// `data(forKey:)` answers nil for that exactly as it does for a key that was
+/// never written, so `load` returned `[]` and the store came up looking like a
+/// first run — empty AND writable. Four terms learned over the next two minutes
+/// were then persisted over 322, and only an unrelated backup taken minutes
+/// earlier got them back. Nothing in the app said a word about it.
+struct DictionaryStorageIncident: Equatable {
+    enum Reason: Equatable {
+        /// Something is stored under the key, but not as Data. The shape of the
+        /// real incident.
+        case wrongType(described: String)
+        /// Data, but not a `[DictionaryEntry]` JSON array — truncated, half
+        /// written, or written by something that is not this app.
+        case undecodable(byteCount: Int)
+    }
+
+    var reason: Reason
+    /// `false` when the value was only stored under the wrong *type* and its
+    /// bytes still decoded into entries. Nothing was lost in that case, so
+    /// saving carries on and the next write puts the value back to Data.
+    var blocksSaving: Bool
+    /// Sibling defaults key holding the original value verbatim, in whatever
+    /// type it arrived as. Same domain as the dictionary itself, so `defaults
+    /// read` reaches it without knowing anything about this code.
+    var quarantineKey: String
+    /// A byte-for-byte copy written outside the preferences plist, when one
+    /// could be written. Preferences are the thing under suspicion here, so the
+    /// copy that matters should not live in them.
+    var quarantineFileURL: URL?
+
+    /// One line for the menu bar. States what has been lost (nothing yet) and
+    /// where to go, because silence is what made 2026-08-07 catastrophic.
+    var summary: String {
+        blocksSaving
+            ? "Your Dictionary can't be read, so Megaphone stopped saving to it. Nothing has been overwritten. Open Settings > Dictionary."
+            : "Your Dictionary was stored in the wrong format and has been repaired. No words were lost."
+    }
+
+    /// The Settings version: names the fault and the recovery copy, so someone
+    /// can get their words back by hand without a support conversation.
+    var detail: String {
+        var lines: [String] = []
+        switch reason {
+        case .wrongType(let described):
+            lines.append("Megaphone expected the saved Dictionary to be stored as data and found \(described) instead.")
+        case .undecodable(let byteCount):
+            lines.append("The saved Dictionary is \(byteCount) bytes of data that Megaphone can no longer read.")
+        }
+        if blocksSaving {
+            lines.append("Saving is paused, so this session's learning is being dropped rather than written over your saved words.")
+        }
+        lines.append("The original value was kept in the preference \(quarantineKey).")
+        if let quarantineFileURL {
+            lines.append("A copy is also at \(quarantineFileURL.path).")
+        }
+        return lines.joined(separator: " ")
+    }
+}
+
 /// Portable snapshot of the private Dictionary written by Export and read by
 /// Import in Settings, so a second Mac can be taught from a file instead of
 /// from scratch — no account or server involved. Dates are ISO-8601 so the
@@ -172,33 +235,77 @@ final class DictionaryStore: ObservableObject {
     static let suggestionLimit = 100
     static let shared = DictionaryStore()
 
+    /// Suffixes for the two sibling keys the quarantine uses. Derived from the
+    /// storage key rather than hard-coded so a store pointed at a test suite
+    /// quarantines inside that suite.
+    static let quarantineKeySuffix = "_unreadable_backup"
+    static let quarantineFilePathKeySuffix = "_unreadable_backup_path"
+
     @Published private(set) var entries: [DictionaryEntry]
     @Published var automaticLearningEnabled: Bool {
         didSet { defaults.set(automaticLearningEnabled, forKey: automaticLearningKey) }
     }
+
+    /// Non-nil when the stored Dictionary could not be read back as written.
+    /// Published so the menu bar and Settings can say so — an unreadable
+    /// dictionary that nothing reports is indistinguishable, from the user's
+    /// seat, from one the app quietly emptied.
+    @Published private(set) var storageIncident: DictionaryStorageIncident?
+
+    /// True while the store is refusing to write. `entries` is not the saved
+    /// dictionary in this state; it is an empty stand-in, and the real one is
+    /// still on disk where it can be recovered.
+    var isSavingPaused: Bool { storageIncident?.blocksSaving == true }
 
     private let defaults: UserDefaults
     private let storageKey: String
     private let migrationKey: String
     private let legacyVocabularyKey: String
     private let automaticLearningKey: String
+    private let quarantineDirectory: URL?
 
     init(
         defaults: UserDefaults = .standard,
         storageKey: String = "dictionary_entries_v1",
         migrationKey: String = "dictionary_migrated_custom_vocabulary_v1",
         legacyVocabularyKey: String = "custom_vocabulary",
-        automaticLearningKey: String = "dictionary_automatic_learning_enabled"
+        automaticLearningKey: String = "dictionary_automatic_learning_enabled",
+        quarantineDirectory: URL? = DictionaryStore.defaultQuarantineDirectory()
     ) {
         self.defaults = defaults
         self.storageKey = storageKey
         self.migrationKey = migrationKey
         self.legacyVocabularyKey = legacyVocabularyKey
         self.automaticLearningKey = automaticLearningKey
-        self.entries = Self.load(from: defaults, key: storageKey)
+        self.quarantineDirectory = quarantineDirectory
+        let loaded = Self.load(from: defaults, key: storageKey, quarantineDirectory: quarantineDirectory)
+        self.entries = loaded.entries
+        self.storageIncident = loaded.incident
         self.automaticLearningEnabled = defaults.object(forKey: automaticLearningKey) == nil
             ? true
             : defaults.bool(forKey: automaticLearningKey)
+        migrateLegacyVocabularyIfNeeded()
+        // A wrong-typed value whose bytes still decoded loses nothing, so put
+        // the key back to Data now rather than leaving the type mismatch to be
+        // rediscovered on every launch. Migration may already have done this;
+        // an extra encode of the same entries is cheaper than reasoning about
+        // whether it ran.
+        if loaded.incident?.blocksSaving == false { persist() }
+    }
+
+    /// Gives up on a value that could not be read and starts saving again.
+    ///
+    /// Deliberately the only way out, and deliberately not reachable from any
+    /// automatic path. The refusal in `persist()` is worth nothing if learning,
+    /// import or usage counting can lift it on their own, so this is driven
+    /// only by the user pressing a button that says what it will do. The
+    /// quarantined copy is left exactly where it is — this stays reversible.
+    func discardUnreadableStorage() {
+        guard isSavingPaused else { return }
+        storageIncident = nil
+        persist()
+        // Skipped at launch so its "done" flag would not be burned against a
+        // dictionary nobody could read. Now that the key is writable it can run.
         migrateLegacyVocabularyIfNeeded()
     }
 
@@ -631,6 +738,12 @@ final class DictionaryStore: ObservableObject {
 
     private func migrateLegacyVocabularyIfNeeded() {
         guard !defaults.bool(forKey: migrationKey) else { return }
+        // Bail before the flag is written. With the stored dictionary unreadable
+        // there is no way to know which of these terms it already holds, and
+        // recording the migration as done would skip it for good once the value
+        // is repaired. The append below would also leave `entries` looking
+        // populated while the real dictionary is still unread.
+        guard !isSavingPaused else { return }
         let legacy = defaults.string(forKey: legacyVocabularyKey) ?? ""
         let terms = legacy
             .components(separatedBy: CharacterSet(charactersIn: "\n,;"))
@@ -658,16 +771,177 @@ final class DictionaryStore: ObservableObject {
     }
 
     private func persist() {
+        // The 2026-08-07 loss went through this line. `load` could not read the
+        // stored value, handed back `[]`, and the next learned term wrote four
+        // entries over 322. Every mutator on this class funnels through here —
+        // add, remove, enable, star, usage, accept, dismiss, observe, edit,
+        // import, migrate — so the refusal belongs here and not at the sixteen
+        // call sites, one of which would eventually be added without it.
+        guard !isSavingPaused else { return }
         guard let data = try? JSONEncoder().encode(entries) else { return }
         defaults.set(data, forKey: storageKey)
     }
 
-    private static func load(from defaults: UserDefaults, key: String) -> [DictionaryEntry] {
-        guard let data = defaults.data(forKey: key),
-              let decoded = try? JSONDecoder().decode([DictionaryEntry].self, from: data) else {
-            return []
+    private struct LoadResult {
+        var entries: [DictionaryEntry]
+        var incident: DictionaryStorageIncident?
+    }
+
+    /// Reads the stored dictionary, keeping the three outcomes apart.
+    ///
+    /// The old version collapsed two of them: `data(forKey:)` answers nil both
+    /// when nothing was ever written and when a value is there but is not Data,
+    /// so it returned `[]` for both. One of those is a first run, which is
+    /// correctly empty and writable. The other is a dictionary that is still on
+    /// disk, and treating it as the first cost 322 entries.
+    private static func load(
+        from defaults: UserDefaults,
+        key: String,
+        quarantineDirectory: URL?
+    ) -> LoadResult {
+        guard let stored = defaults.object(forKey: key) else {
+            // Nothing has ever been written. The only case allowed to come up
+            // empty *and* writable.
+            return LoadResult(entries: [], incident: nil)
         }
-        return decoded
+
+        if let data = stored as? Data {
+            if let decoded = try? JSONDecoder().decode([DictionaryEntry].self, from: data) {
+                return LoadResult(entries: decoded, incident: nil)
+            }
+            return LoadResult(entries: [], incident: quarantine(
+                stored,
+                reason: .undecodable(byteCount: data.count),
+                blocksSaving: true,
+                in: defaults,
+                key: key,
+                directory: quarantineDirectory
+            ))
+        }
+
+        // Not Data. If it is text that still carries the JSON, the words are
+        // intact and only the type is wrong — take them, and let the write
+        // below put the key back. This is the shape the 2026-08-07 value had,
+        // and salvaging it is the difference between an incident and a
+        // non-event. It cannot fire spuriously: every key of `DictionaryEntry`
+        // except the three added later is required, so no stray string decodes.
+        if let text = stored as? String,
+           let decoded = try? JSONDecoder().decode([DictionaryEntry].self, from: Data(text.utf8)) {
+            return LoadResult(entries: decoded, incident: quarantine(
+                stored,
+                reason: .wrongType(described: describe(stored)),
+                blocksSaving: false,
+                in: defaults,
+                key: key,
+                directory: quarantineDirectory
+            ))
+        }
+
+        return LoadResult(entries: [], incident: quarantine(
+            stored,
+            reason: .wrongType(described: describe(stored)),
+            blocksSaving: true,
+            in: defaults,
+            key: key,
+            directory: quarantineDirectory
+        ))
+    }
+
+    /// Keeps the bytes that could not be read, so getting the words back does
+    /// not depend on an unrelated backup happening to exist — which is the only
+    /// reason the 2026-08-07 loss was recoverable at all.
+    ///
+    /// First failure wins. If a copy is already parked, it is left alone and
+    /// nothing new is written: the oldest copy is the one closest to the last
+    /// good dictionary, and a relaunch loop must not push it out.
+    private static func quarantine(
+        _ stored: Any,
+        reason: DictionaryStorageIncident.Reason,
+        blocksSaving: Bool,
+        in defaults: UserDefaults,
+        key: String,
+        directory: URL?
+    ) -> DictionaryStorageIncident {
+        let quarantineKey = key + quarantineKeySuffix
+        let pathKey = key + quarantineFilePathKeySuffix
+        var fileURL: URL?
+
+        if defaults.object(forKey: quarantineKey) == nil {
+            // Whatever came out of `object(forKey:)` is a property-list type by
+            // construction, so it can always go back in as one.
+            defaults.set(stored, forKey: quarantineKey)
+            fileURL = writeQuarantineFile(stored, key: key, directory: directory)
+            if let fileURL { defaults.set(fileURL.path, forKey: pathKey) }
+        } else if let existingPath = defaults.string(forKey: pathKey) {
+            fileURL = URL(fileURLWithPath: existingPath)
+        }
+
+        return DictionaryStorageIncident(
+            reason: reason,
+            blocksSaving: blocksSaving,
+            quarantineKey: quarantineKey,
+            quarantineFileURL: fileURL
+        )
+    }
+
+    private static func writeQuarantineFile(_ stored: Any, key: String, directory: URL?) -> URL? {
+        guard let directory else { return nil }
+        let payload: Data?
+        switch stored {
+        case let data as Data: payload = data
+        case let text as String: payload = Data(text.utf8)
+        default: payload = try? PropertyListSerialization.data(
+            fromPropertyList: stored, format: .xml, options: 0
+        )
+        }
+        guard let payload else { return nil }
+
+        let stamp = DateFormatter()
+        stamp.dateFormat = "yyyy-MM-dd-HHmmss"
+        stamp.timeZone = TimeZone(identifier: "UTC")
+        stamp.locale = Locale(identifier: "en_US_POSIX")
+        // The timestamp is only to seconds, so two incidents inside one second
+        // would land on the same name and the second would erase the first —
+        // measured, not hypothetical: five corruptions in one harness run wrote
+        // a single file. A copy that another copy can delete is not a copy.
+        let base = "\(key)-unreadable-\(stamp.string(from: Date()))"
+        var url = directory.appendingPathComponent("\(base).bin", isDirectory: false)
+        var attempt = 2
+        while FileManager.default.fileExists(atPath: url.path), attempt <= 100 {
+            url = directory.appendingPathComponent("\(base)-\(attempt).bin", isDirectory: false)
+            attempt += 1
+        }
+        do {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            try payload.write(to: url, options: .atomic)
+            return url
+        } catch {
+            // Best effort. The sibling defaults key already holds the value, and
+            // a failure to write here must never stop the store reporting the
+            // fault — reporting it is the part that was missing.
+            return nil
+        }
+    }
+
+    /// Same folder the transcript log uses.
+    static func defaultQuarantineDirectory() -> URL? {
+        FileManager.default
+            .urls(for: .applicationSupportDirectory, in: .userDomainMask)
+            .first?
+            .appendingPathComponent("Megaphone", isDirectory: true)
+    }
+
+    /// Plain words rather than `type(of:)`, whose answer for a bridged
+    /// preference value is `__NSCFString` and tells the user nothing.
+    private static func describe(_ value: Any) -> String {
+        switch value {
+        case is String: return "text"
+        case is NSNumber: return "a number"
+        case is Date: return "a date"
+        case is [Any]: return "a list"
+        case is [String: Any]: return "a group of settings"
+        default: return "an unexpected kind of value"
+        }
     }
 
     static func cleaned(_ term: String) -> String {

@@ -1399,6 +1399,7 @@ struct DictionarySettingsView: View {
     @State private var searchText = ""
     @State private var addError: String?
     @State private var transferStatus: String?
+    @State private var isConfirmingDiscard = false
     @FocusState private var newTermFocused: Bool
 
     private var suggestions: [DictionaryEntry] {
@@ -1420,6 +1421,10 @@ struct DictionarySettingsView: View {
     var body: some View {
         ScrollView {
             VStack(spacing: 20) {
+                if let incident = store.storageIncident {
+                    storageIncidentCard(incident)
+                }
+
                 SettingsCard("Your Dictionary", icon: "text.book.closed.fill") {
                     VStack(alignment: .leading, spacing: 12) {
                         Text("Teach Megaphone the names, products, acronyms, and technical terms that make your writing yours. Dictionary words give both transcription and Smart Cleanup the right spelling, and stay on this Mac.")
@@ -1642,6 +1647,59 @@ struct DictionarySettingsView: View {
         .padding(.vertical, 9)
     }
 
+    /// Shown when the saved Dictionary could not be read back. This is the
+    /// screen someone opens when their words have vanished, so it is the one
+    /// place that has to say what happened, where the old copy is, and what
+    /// pressing the button will do — the 2026-08-07 loss was total *and*
+    /// silent, and the silent half is the one that made it unrecoverable
+    /// without an unrelated backup.
+    @ViewBuilder
+    private func storageIncidentCard(_ incident: DictionaryStorageIncident) -> some View {
+        SettingsCard(
+            incident.blocksSaving ? "Your Dictionary can't be read" : "Your Dictionary was repaired",
+            icon: incident.blocksSaving ? "exclamationmark.triangle.fill" : "checkmark.circle.fill"
+        ) {
+            VStack(alignment: .leading, spacing: 10) {
+                Text(incident.detail)
+                    .font(.caption)
+                    .foregroundStyle(incident.blocksSaving ? .primary : .secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                if incident.blocksSaving {
+                    Text("Nothing can be saved until you start a new Dictionary. Do that first, then use Import below to restore from an export. The copy above stays where it is either way.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    HStack(spacing: 8) {
+                        if let fileURL = incident.quarantineFileURL {
+                            Button("Show Saved Copy in Finder") {
+                                NSWorkspace.shared.activateFileViewerSelecting([fileURL])
+                            }
+                        }
+                        Button("Start a New Dictionary") {
+                            isConfirmingDiscard = true
+                        }
+                    }
+                    .controlSize(.small)
+                }
+            }
+        }
+        .confirmationDialog(
+            "Start a new Dictionary?",
+            isPresented: $isConfirmingDiscard,
+            titleVisibility: .visible
+        ) {
+            Button("Start a New Dictionary", role: .destructive) {
+                store.discardUnreadableStorage()
+                appState.refreshDictionaryStorageStatus()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Megaphone will start saving again from whatever is in the list below. The unreadable copy stays where it is, so you can still recover it by hand.")
+        }
+    }
+
     private func addTerm() {
         let term = newTerm.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !term.isEmpty else { return }
@@ -1675,6 +1733,16 @@ struct DictionarySettingsView: View {
     }
 
     private func importDictionary() {
+        // Import goes through `persist()` like everything else, so while the
+        // store is refusing to write it would report "Imported 300 new words"
+        // and save none of them. Say so instead of lying quietly.
+        guard !store.isSavingPaused else {
+            presentTransferError(
+                "Nothing Can Be Saved Yet",
+                "Megaphone can't read your saved Dictionary, so it isn't writing to it. Choose Start a New Dictionary above, then import."
+            )
+            return
+        }
         let panel = NSOpenPanel()
         panel.allowedContentTypes = [.json]
         panel.allowsMultipleSelection = false

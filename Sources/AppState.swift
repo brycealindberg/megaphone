@@ -839,6 +839,13 @@ final class AppState: ObservableObject, @unchecked Sendable {
     @Published var statusText: String = "Ready"
     @Published var hasAccessibility = false
     @Published var hotkeyMonitoringErrorMessage: String?
+    /// The saved Dictionary could not be read, so the store has stopped writing
+    /// to it. Kept separate from `errorMessage`, which every dictation clears —
+    /// the 2026-08-07 loss happened *between* two dictations, so a message that
+    /// the next recording wipes is a message the user never sees. Same shape as
+    /// `hotkeyMonitoringErrorMessage`: a standing fault, shown until it is dealt
+    /// with.
+    @Published var dictionaryStorageErrorMessage: String?
     @Published var isDebugOverlayActive = false
     @Published var selectedSettingsTab: SettingsTab? = .general
     @Published var pipelineHistory: [PipelineHistoryItem] = []
@@ -952,12 +959,18 @@ final class AppState: ObservableObject, @unchecked Sendable {
             fallback: shortcuts.cancel != .defaultCancel ? shortcuts.cancel : nil
         )
         let customVocabulary = UserDefaults.standard.string(forKey: customVocabularyStorageKey) ?? ""
-        let wordCorrections = UserDefaults.standard.string(forKey: wordCorrectionsStorageKey) ?? ""
+        // The three hand-authored text prefs go through PreferenceLoad, which
+        // parks an unreadable value under a backup key before this init hands
+        // the empty string to a TextEditor whose first keystroke would save
+        // over it. `custom_vocabulary` above does not: nothing outside the
+        // onboarding screen writes it, and its terms are mirrored into
+        // DictionaryStore, so it is recoverable from there.
+        let wordCorrections = PreferenceLoad.string(forKey: wordCorrectionsStorageKey).value ?? ""
         let transcriptionLanguage = Self.normalizeTranscriptionLanguage(
             UserDefaults.standard.string(forKey: transcriptionLanguageStorageKey) ?? ""
         )
-        let customSystemPrompt = UserDefaults.standard.string(forKey: customSystemPromptStorageKey) ?? ""
-        let customContextPrompt = UserDefaults.standard.string(forKey: customContextPromptStorageKey) ?? ""
+        let customSystemPrompt = PreferenceLoad.string(forKey: customSystemPromptStorageKey).value ?? ""
+        let customContextPrompt = PreferenceLoad.string(forKey: customContextPromptStorageKey).value ?? ""
         let instructionExecutionGuardEnabled = UserDefaults.standard.object(
             forKey: instructionExecutionGuardEnabledStorageKey
         ) == nil
@@ -1046,20 +1059,17 @@ final class AppState: ObservableObject, @unchecked Sendable {
         let handsFreeSoundName = UserDefaults.standard
             .string(forKey: handsFreeSoundNameStorageKey) ?? "Bottle"
         
-        let initialMacros: [VoiceMacro]
-        if let data = UserDefaults.standard.data(forKey: "voice_macros"),
-           let decoded = try? JSONDecoder().decode([VoiceMacro].self, from: data) {
-            initialMacros = decoded
-        } else {
-            initialMacros = []
-        }
-        let initialUserTransforms: [Transform]
-        if let data = UserDefaults.standard.data(forKey: "user_transforms"),
-           let decoded = try? JSONDecoder().decode([Transform].self, from: data) {
-            initialUserTransforms = decoded
-        } else {
-            initialUserTransforms = []
-        }
+        // Both lists are hand-authored and both are saved whole by a `didSet`.
+        // The assignments below happen inside `init`, where `didSet` does not
+        // fire, so an unreadable value survives the launch — and then dies on
+        // the first edit the user makes in Settings, which writes the empty
+        // list plus one new entry over everything that was there. PreferenceLoad
+        // copies it aside before that can happen.
+        let initialMacros = PreferenceLoad.json([VoiceMacro].self, forKey: voiceMacrosStorageKey).value ?? []
+        let initialUserTransforms = PreferenceLoad.json(
+            [Transform].self,
+            forKey: userTransformsStorageKey
+        ).value ?? []
         let plainMegaphoneWakeWordEnabled = UserDefaults.standard.bool(
             forKey: plainMegaphoneWakeWordEnabledStorageKey
         )
@@ -1114,8 +1124,16 @@ final class AppState: ObservableObject, @unchecked Sendable {
         self.outputLanguage = outputLanguage
         // Load the saved profiles, or build them once from the global switches
         // above plus the old per-context formality dictionary.
-        if let data = UserDefaults.standard.data(forKey: dictationProfilesStorageKey),
-           let decoded = try? JSONDecoder().decode(DictationProfileSet.self, from: data) {
+        //
+        // This is the one loader that overwrites at launch rather than on the
+        // next edit — the seeding branch below writes unconditionally — so an
+        // unreadable value here used to be gone before the window opened.
+        // PreferenceLoad parks it under a backup key first, which is what makes
+        // re-seeding safe to keep doing.
+        if let decoded = PreferenceLoad.json(
+            DictationProfileSet.self,
+            forKey: dictationProfilesStorageKey
+        ).value {
             self.dictationProfiles = decoded
         } else {
             // `didSet` does not fire for an assignment inside `init`, so the
@@ -1223,6 +1241,8 @@ final class AppState: ObservableObject, @unchecked Sendable {
         // Clear any stale recording flag left over from an unclean exit.
         AppState.writeRecordingStateFlag(false)
 
+        refreshDictionaryStorageStatus()
+
         // Populate the on-device speech locale picker and current model
         // status; both come from async Speech framework APIs.
         Task { @MainActor [weak self] in
@@ -1246,6 +1266,19 @@ final class AppState: ObservableObject, @unchecked Sendable {
     deinit {
         removeAudioDeviceObservers()
         AppState.writeRecordingStateFlag(false)
+    }
+
+    /// Mirrors the Dictionary store's storage fault into the menu bar. Called at
+    /// launch and again after Settings resolves one, because the store's own
+    /// `objectWillChange` does not reach a plain `@Published` here.
+    ///
+    /// Only the blocking case is raised. A wrong-typed value whose words came
+    /// back intact needs no action from anyone, and a permanent line in the menu
+    /// bar for a fault the app already fixed trains people to ignore the line.
+    func refreshDictionaryStorageStatus() {
+        dictionaryStorageErrorMessage = DictionaryStore.shared.isSavingPaused
+            ? DictionaryStore.shared.storageIncident?.summary
+            : nil
     }
 
     private func removeAudioDeviceObservers() {

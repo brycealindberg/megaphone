@@ -33,6 +33,265 @@ enum DictionaryStoreTests {
         testTwoDifferentMishearsDoNotConfirmOnePair()
         testUnrepresentablePairsAreNeverOffered()
         testExistingRuleBlockingFoldsDiacritics()
+        testAbsentKeyIsAFirstRunAndStaysWritable()
+        testValidStoredDictionaryStillLoads()
+        testWrongTypedValueIsNeverOverwritten()
+        testGarbageDataIsNeverOverwritten()
+        testWrongTypedValueThatStillHoldsTheJSONIsRecovered()
+        testUnreadableValueIsKeptForRecovery()
+        testUnreadableValueDoesNotBurnTheLegacyMigration()
+        testDiscardIsTheOnlyWayToResumeSaving()
+    }
+
+    // MARK: - Unreadable storage
+    //
+    // 2026-08-07: `dictionary_entries_v1` came back as a String where Data
+    // belongs. `data(forKey:)` answers nil for that exactly as it does for a
+    // key that was never written, so the store came up empty AND writable, and
+    // four freshly-learned terms were persisted over 322. These cover the four
+    // states the loader has to keep apart, and — the actual regression — that a
+    // value it cannot read is never written over.
+
+    /// The case that must stay boring. No stored value at all is a first run:
+    /// empty dictionary, no incident, saving works from the first word.
+    private static func testAbsentKeyIsAFirstRunAndStaysWritable() {
+        let (suite, defaults, directory) = makeIsolatedStorage()
+        defer { destroy(suite: suite, defaults: defaults, directory: directory) }
+
+        let store = makeStore(defaults, directory)
+        expectEqual(store.entries.isEmpty, true)
+        expectEqual(store.storageIncident, nil)
+        expectEqual(store.isSavingPaused, false)
+
+        _ = try! store.addManual("Kestrel")
+        let reloaded = makeStore(defaults, directory)
+        expectEqual(reloaded.activeTerms, ["Kestrel"])
+        expectEqual(reloaded.storageIncident, nil)
+        // Nothing was quarantined, because nothing was wrong.
+        expectEqual(defaults.object(forKey: "entries" + DictionaryStore.quarantineKeySuffix) == nil, true)
+    }
+
+    /// The other case that must stay boring: a real stored dictionary loads,
+    /// reports no incident, and keeps saving.
+    private static func testValidStoredDictionaryStillLoads() {
+        let (suite, defaults, directory) = makeIsolatedStorage()
+        defer { destroy(suite: suite, defaults: defaults, directory: directory) }
+
+        let seed = makeStore(defaults, directory)
+        _ = try! seed.addManual("Kestrel")
+        _ = try! seed.addManual("LedgerIQ")
+
+        let reloaded = makeStore(defaults, directory)
+        expectEqual(reloaded.activeTerms, ["Kestrel", "LedgerIQ"])
+        expectEqual(reloaded.storageIncident, nil)
+        expectEqual(reloaded.isSavingPaused, false)
+        _ = try! reloaded.addManual("Whitfield")
+        expectEqual(makeStore(defaults, directory).activeTerms.count, 3)
+    }
+
+    /// The regression itself. A String where Data belongs must not read as a
+    /// first run, and the session's learning must be dropped rather than
+    /// written over a dictionary that is still sitting there.
+    private static func testWrongTypedValueIsNeverOverwritten() {
+        let (suite, defaults, directory) = makeIsolatedStorage()
+        defer { destroy(suite: suite, defaults: defaults, directory: directory) }
+
+        // Not the JSON — a value that carries no recoverable entries, which is
+        // the case where refusing to write is the only thing protecting them.
+        defaults.set("dictionary_entries_v1", forKey: "entries")
+        let store = makeStore(defaults, directory)
+
+        expectEqual(store.entries.isEmpty, true)
+        expectEqual(store.isSavingPaused, true)
+        expectEqual(store.storageIncident?.reason, DictionaryStorageIncident.Reason.wrongType(described: "text"))
+
+        // Every path that writes, exercised against the guard in one place.
+        store.observe(candidateTerms: ["Kestrel"])
+        store.observe(candidateTerms: ["Kestrel"])
+        store.observe(candidateTerms: ["Kestrel"])
+        _ = try? store.addManual("Whitfield")
+        store.observeEditCorrection(
+            DictationEditCorrection(heard: "Merrick", written: "Marek", isCaseOnly: false)
+        )
+        store.importEntries([DictionaryEntry(term: "Trelawney", source: .manual, status: .active)])
+        store.recordUsage(in: "Kestrel and Whitfield")
+        if let first = store.entries.first {
+            store.setStarred(true, for: first.id)
+            store.setEnabled(false, for: first.id)
+            store.acceptSuggestion(id: first.id)
+            store.dismissSuggestion(id: first.id)
+            store.remove(id: first.id)
+        }
+
+        expectEqual(defaults.string(forKey: "entries"), "dictionary_entries_v1")
+        expectEqual(defaults.data(forKey: "entries") == nil, true)
+    }
+
+    /// Same protection when the value IS Data but the bytes are damaged — a
+    /// half-written or truncated blob decodes to nothing and must be left alone.
+    private static func testGarbageDataIsNeverOverwritten() {
+        for corrupt in [
+            Data(#"[{"id":"7B1C"#.utf8),                    // truncated mid-entry
+            Data([0x00, 0xFF, 0x10, 0x82, 0x5A]),           // not text at all
+            Data(#"{"term":"Kestrel"}"#.utf8),              // valid JSON, wrong shape
+        ] {
+            let (suite, defaults, directory) = makeIsolatedStorage()
+            defer { destroy(suite: suite, defaults: defaults, directory: directory) }
+
+            defaults.set(corrupt, forKey: "entries")
+            let store = makeStore(defaults, directory)
+
+            expectEqual(store.entries.isEmpty, true)
+            expectEqual(store.isSavingPaused, true)
+            expectEqual(
+                store.storageIncident?.reason,
+                DictionaryStorageIncident.Reason.undecodable(byteCount: corrupt.count)
+            )
+
+            store.observe(candidateTerms: ["Kestrel"])
+            store.observe(candidateTerms: ["Kestrel"])
+            store.observe(candidateTerms: ["Kestrel"])
+            _ = try? store.addManual("Whitfield")
+            expectEqual(defaults.data(forKey: "entries"), corrupt)
+        }
+    }
+
+    /// A wrong-typed value whose bytes still hold the JSON loses nothing, so
+    /// the words come back and the key is put right instead of being frozen.
+    private static func testWrongTypedValueThatStillHoldsTheJSONIsRecovered() {
+        let (suite, defaults, directory) = makeIsolatedStorage()
+        defer { destroy(suite: suite, defaults: defaults, directory: directory) }
+
+        let seed = makeStore(defaults, directory)
+        _ = try! seed.addManual("Kestrel")
+        _ = try! seed.addManual("LedgerIQ")
+        let good = defaults.data(forKey: "entries")!
+
+        // Exactly the corruption: the same bytes, stored as a String.
+        defaults.set(String(data: good, encoding: .utf8)!, forKey: "entries")
+        let store = makeStore(defaults, directory)
+
+        expectEqual(store.activeTerms, ["Kestrel", "LedgerIQ"])
+        expectEqual(store.isSavingPaused, false)
+        expectEqual(store.storageIncident?.blocksSaving, false)
+        // The type mismatch is repaired at load, not left to be rediscovered.
+        expectEqual(defaults.data(forKey: "entries") != nil, true)
+        expectEqual(makeStore(defaults, directory).activeTerms, ["Kestrel", "LedgerIQ"])
+        // And the original is still kept, in case the salvage was wrong.
+        expectEqual(
+            defaults.string(forKey: "entries" + DictionaryStore.quarantineKeySuffix),
+            String(data: good, encoding: .utf8)
+        )
+    }
+
+    /// Recovery must not depend on an unrelated backup happening to exist —
+    /// that is the only reason 2026-08-07 was survivable.
+    private static func testUnreadableValueIsKeptForRecovery() {
+        let (suite, defaults, directory) = makeIsolatedStorage()
+        defer { destroy(suite: suite, defaults: defaults, directory: directory) }
+
+        defaults.set("something that is not a dictionary", forKey: "entries")
+        let store = makeStore(defaults, directory)
+
+        let incident = store.storageIncident!
+        expectEqual(incident.quarantineKey, "entries" + DictionaryStore.quarantineKeySuffix)
+        expectEqual(
+            defaults.string(forKey: incident.quarantineKey),
+            "something that is not a dictionary"
+        )
+        let fileURL = incident.quarantineFileURL!
+        expectEqual(
+            try! String(contentsOf: fileURL, encoding: .utf8),
+            "something that is not a dictionary"
+        )
+        // The message has to name both, or the copy might as well not exist.
+        expect(incident.detail.contains(incident.quarantineKey), "Recovery key is not in the message")
+        expect(incident.detail.contains(fileURL.path), "Recovery file is not in the message")
+
+        // A relaunch loop must not push the first copy out with a later one.
+        defaults.set("a second, different corruption", forKey: "entries")
+        let relaunched = makeStore(defaults, directory)
+        expectEqual(relaunched.isSavingPaused, true)
+        expectEqual(
+            defaults.string(forKey: incident.quarantineKey),
+            "something that is not a dictionary"
+        )
+        expectEqual(relaunched.storageIncident?.quarantineFileURL, fileURL)
+    }
+
+    /// The migration flag is one-way. Setting it while the dictionary cannot be
+    /// read would skip the legacy import for good once the value is repaired.
+    private static func testUnreadableValueDoesNotBurnTheLegacyMigration() {
+        let (suite, defaults, directory) = makeIsolatedStorage()
+        defer { destroy(suite: suite, defaults: defaults, directory: directory) }
+
+        defaults.set("Kestrel\nLedgerIQ", forKey: "legacy")
+        defaults.set("not a dictionary", forKey: "entries")
+
+        let blocked = makeStore(defaults, directory)
+        expectEqual(blocked.entries.isEmpty, true)
+        expectEqual(defaults.bool(forKey: "migrated"), false)
+
+        // Once the value is dealt with, the migration that was skipped runs.
+        blocked.discardUnreadableStorage()
+        expectEqual(Set(blocked.activeTerms), Set(["Kestrel", "LedgerIQ"]))
+        expectEqual(defaults.bool(forKey: "migrated"), true)
+        expectEqual(Set(makeStore(defaults, directory).activeTerms), Set(["Kestrel", "LedgerIQ"]))
+    }
+
+    /// Saving resumes only on a deliberate, user-driven discard — never as a
+    /// side effect of the app carrying on with its day.
+    private static func testDiscardIsTheOnlyWayToResumeSaving() {
+        let (suite, defaults, directory) = makeIsolatedStorage()
+        defer { destroy(suite: suite, defaults: defaults, directory: directory) }
+
+        defaults.set("not a dictionary", forKey: "entries")
+        let store = makeStore(defaults, directory)
+
+        // Toggling automatic learning writes its own key; it must not clear this.
+        store.automaticLearningEnabled = false
+        store.automaticLearningEnabled = true
+        store.dismissPromotion("merrick")
+        _ = store.exportDocument(exactCorrections: "")
+        _ = store.promotableCorrections()
+        expectEqual(store.isSavingPaused, true)
+        expectEqual(defaults.string(forKey: "entries"), "not a dictionary")
+
+        store.discardUnreadableStorage()
+        expectEqual(store.isSavingPaused, false)
+        expectEqual(store.storageIncident, nil)
+        _ = try! store.addManual("Kestrel")
+        expectEqual(makeStore(defaults, directory).activeTerms, ["Kestrel"])
+        // The quarantined copy survives the discard — it is the way back.
+        expectEqual(
+            defaults.string(forKey: "entries" + DictionaryStore.quarantineKeySuffix),
+            "not a dictionary"
+        )
+    }
+
+    /// A defaults suite and a quarantine folder that are this test's alone, so
+    /// nothing here can reach the installed app's preferences or its
+    /// Application Support folder.
+    private static func makeIsolatedStorage() -> (String, UserDefaults, URL) {
+        let suite = "DictionaryStoreTests.\(UUID().uuidString)"
+        let directory = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent(suite, isDirectory: true)
+        return (suite, UserDefaults(suiteName: suite)!, directory)
+    }
+
+    private static func makeStore(_ defaults: UserDefaults, _ directory: URL) -> DictionaryStore {
+        DictionaryStore(
+            defaults: defaults,
+            storageKey: "entries",
+            migrationKey: "migrated",
+            legacyVocabularyKey: "legacy",
+            quarantineDirectory: directory
+        )
+    }
+
+    private static func destroy(suite: String, defaults: UserDefaults, directory: URL) {
+        defaults.removePersistentDomain(forName: suite)
+        try? FileManager.default.removeItem(at: directory)
     }
 
     /// `misheardCount` lives on the term but the pair it promotes as is
