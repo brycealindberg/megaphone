@@ -65,6 +65,17 @@ enum SelfCorrectionResolverTests {
         expect(SelfCorrectionResolver.resolve("Charge 1.5 million, actually scratch that."), "")
         expect(SelfCorrectionResolver.resolve("Tell Dr. Smith tomorrow, scratch that."), "")
         expect(SelfCorrectionResolver.resolve("Email me at bryce at example.com, scratch that."), "")
+        // Paths and versions, checked 2026-08-07 while auditing the sibling
+        // scan in `QuestionMark` — which had exactly this bug and these inputs
+        // proved it. These already passed here, because the tokenizer never
+        // cut inside them; they are pinned so a future rewrite back to a "."
+        // scan cannot quietly reintroduce it.
+        expect(SelfCorrectionResolver.resolve("Open src/main.swift, scratch that."), "")
+        expect(SelfCorrectionResolver.resolve("We are on version 2.5.1, scratch that."), "")
+        expect(
+            SelfCorrectionResolver.resolve("Send the invoice Friday. Open src/main.swift, scratch that."),
+            "Send the invoice Friday."
+        )
         // A genuine earlier sentence is still kept, decimal and all. BOTH forms:
         // the version with a leading particle passed while the bare one was
         // broken, because the particle pushes the marker past the sentence

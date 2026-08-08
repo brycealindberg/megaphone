@@ -19,6 +19,50 @@ enum QuestionMarkTests {
         testExclamativesAreNotQuestions()
         testWhenClauseStatementsUntouched()
         testWhenQuestionsStillFire()
+        testDotsInsideWordsAreNotSentenceEnds()
+        testRealSentenceEndsAfterDottedWords()
+    }
+
+    /// A stop inside a path, a version, a domain, a decimal or an abbreviation
+    /// is not a sentence end. It used to be: the scan took the last "." wherever
+    /// it sat, so "can you check src/main.swift" was tested as the fragment
+    /// "swift", matched no question frame, and kept its flat ending. Measured
+    /// 2026-08-07 against the shipped scan — all seven came back unchanged, and
+    /// invisibly so, because `punctuate` only ever adds a "?". This profile is
+    /// on by default in `codeOrTerminal`, which is exactly where paths and
+    /// version numbers get dictated.
+    private static func testDotsInsideWordsAreNotSentenceEnds() {
+        expect("can you check src/main.swift", "can you check src/main.swift?")
+        expect("can you look at CLAUDE.md and tell me what it says",
+               "can you look at CLAUDE.md and tell me what it says?")
+        expect("are we on version 2.5.1 now", "are we on version 2.5.1 now?")
+        expect("is it 1.5 million all in", "is it 1.5 million all in?")
+        expect("did you email marek at ledgeriq.io about it",
+               "did you email marek at ledgeriq.io about it?")
+        expect("did you hear back from Dr. Okonkwo", "did you hear back from Dr. Okonkwo?")
+        expect("can you send e.g. the thing we discussed",
+               "can you send e.g. the thing we discussed?")
+        // The same shapes in a statement still get nothing: widening the
+        // sentence must not manufacture a question out of one.
+        expect("I'll check src/main.swift tonight", "I'll check src/main.swift tonight")
+        expect("we shipped version 2.5.1 today", "we shipped version 2.5.1 today")
+    }
+
+    /// The other direction, which is what stops the fix from over-correcting: a
+    /// stop that really does end a sentence must still be found, including right
+    /// after a filename, a version or an abbreviation, and including the
+    /// lowercase continuation the recogniser sometimes emits. That last row is
+    /// why `NLTokenizer` cannot simply replace the scan — measured, it does not
+    /// split "…late. can you cover for me" at all — and the final case is what a
+    /// whole-string fallback would have broken, by marking a leading question as
+    /// the last sentence and stamping a "?" onto a trailing statement.
+    private static func testRealSentenceEndsAfterDottedWords() {
+        expect("Check src/main.swift. can you review it", "Check src/main.swift. can you review it?")
+        expect("Ship 2.5.1 today. is that ok", "Ship 2.5.1 today. is that ok?")
+        expect("Ask Dr. Okonkwo. did she reply", "Ask Dr. Okonkwo. did she reply?")
+        expect("Meet at 5 p.m. Can you make it", "Meet at 5 p.m. Can you make it?")
+        expect("Send it to Mr. Whitfield. Can you confirm", "Send it to Mr. Whitfield. Can you confirm?")
+        expect("can you send it. i'll be out", "can you send it. i'll be out")
     }
 
     private static func testWhQuestions() {

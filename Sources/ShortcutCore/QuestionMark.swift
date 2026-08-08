@@ -186,22 +186,107 @@ enum QuestionMark {
         return false
     }
 
-    /// Index just after the previous sentence terminator (. ! ? / newline).
+    /// Index just after the previous sentence terminator (`!`, `?`, newline, or
+    /// a full stop that genuinely ends a sentence).
+    ///
+    /// This used to treat EVERY "." as terminal, so a stop anywhere inside the
+    /// last sentence pushed the start past it and left a fragment no question
+    /// frame can match. Measured 2026-08-07 against the shipped scan — the
+    /// left column is the text, the right is the "sentence" it went on to test:
+    ///
+    ///     "can you check src/main.swift"        ->  "swift"
+    ///     "can you look at CLAUDE.md and …"     ->  "md and …"
+    ///     "are we on version 2.5.1 now"         ->  "1 now"
+    ///     "did you email marek at ledgeriq.io …" -> "io about it"
+    ///     "did you hear back from Dr. Okonkwo"  ->  "Okonkwo"
+    ///     "can you send e.g. the thing we …"    ->  "the thing we …"
+    ///
+    /// All six are questions that kept their flat ending, and `questionMarks` is
+    /// on by default in `codeOrTerminal` — where paths and version numbers are
+    /// most of what gets dictated. Nothing looked wrong, because `punctuate`
+    /// only ever ADDS a "?": a misplaced boundary makes it do nothing at all,
+    /// which is why this survived.
+    ///
+    /// Handing the whole job to `NLTokenizer`, the way
+    /// `SelfCorrectionResolver.sentenceStart` does, is NOT the fix. Measured the
+    /// same day: the tokenizer does not split "I'm running late. can you cover
+    /// for me" at all, because the continuation is lowercase — and that case is
+    /// the point of `testMultiSentenceOnlyLast`. So the scan stays and only the
+    /// "is this stop terminal" test changes.
     private static func lastSentenceStart(in ns: NSString) -> Int {
         var i = ns.length - 1
         while i >= 0 {
-            if let s = UnicodeScalar(ns.character(at: i)),
-               s == "." || s == "!" || s == "?" || s == "\n" {
-                var start = i + 1
-                while start < ns.length,
-                      let sp = UnicodeScalar(ns.character(at: start)),
-                      CharacterSet.whitespaces.contains(sp) {
-                    start += 1
-                }
-                return start
+            if let s = UnicodeScalar(ns.character(at: i)) {
+                if s == "!" || s == "?" || s == "\n" { return wordStart(from: i + 1, in: ns) }
+                if s == ".", let start = terminalPeriodStart(at: i, in: ns) { return start }
             }
             i -= 1
         }
         return 0
+    }
+
+    /// Where the next sentence begins after the "." at `i`, or nil when that
+    /// stop is inside a path, a version, a domain, a decimal or an abbreviation.
+    private static func terminalPeriodStart(at i: Int, in ns: NSString) -> Int? {
+        // Nothing but the stop's own width between it and the next word: a
+        // path, a version, a domain, a decimal — "src/main.swift", "2.5.1",
+        // "ledgeriq.io", "1.5". A real sentence end always has a space or a
+        // line break after it; the recogniser never runs two sentences together.
+        if i + 1 < ns.length,
+           let after = UnicodeScalar(ns.character(at: i + 1)),
+           !CharacterSet.whitespacesAndNewlines.contains(after) { return nil }
+
+        let start = wordStart(from: i + 1, in: ns)
+        guard start < ns.length, let head = UnicodeScalar(ns.character(at: start)) else { return start }
+
+        if Character(head).isUppercase {
+            // A capital is the one cue `NLTokenizer` needs to tell an
+            // abbreviation from a sentence end, and measured 2026-08-07 it gets
+            // both directions right: it refuses to split "Dr. Okonkwo",
+            // "Mr. Whitfield" and "vs. Kestrel", and it does split "late. Can
+            // you cover", "5 p.m. Can you make it" and "src/main.swift. Can you
+            // review it". Borrowing Apple's lexicon beats keeping a list of
+            // abbreviations here that would go stale on the first unusual one.
+            return SelfCorrectionResolver.sentenceStart(before: start, in: ns) == start ? start : nil
+        }
+        // A lowercase continuation tells the tokenizer nothing — measured, it
+        // declines to split there whatever precedes the stop — so the only
+        // abbreviation still legible from the text alone is the letter-dot
+        // shape. This costs the mirror case ("5 p.m. can you make it", with a
+        // lowercase "can") which now reads as one sentence; that is a MISS,
+        // the same silence as before this fix, never a "?" in the wrong place.
+        // The recogniser capitalizes sentence starts, so the capital form above
+        // is the one that actually occurs.
+        return isLetterDotAbbreviation(endingAt: i, in: ns) ? nil : start
+    }
+
+    /// "e.g.", "i.e.", "a.m.", "U.S." — single letters separated by stops. Two
+    /// stops minimum, so an ordinary word ending a sentence ("late.") and a
+    /// filename ("src/main.swift.") are both excluded.
+    private static func isLetterDotAbbreviation(endingAt i: Int, in ns: NSString) -> Bool {
+        var j = i
+        var stops = 0
+        while j >= 1 {
+            guard let stop = UnicodeScalar(ns.character(at: j)), stop == ".",
+                  let letter = UnicodeScalar(ns.character(at: j - 1)),
+                  CharacterSet.letters.contains(letter) else { return false }
+            stops += 1
+            j -= 2
+            guard j >= 0, let before = UnicodeScalar(ns.character(at: j)) else { return stops >= 2 }
+            if before == "." { continue }
+            return stops >= 2 && CharacterSet.whitespacesAndNewlines.contains(before)
+        }
+        return false
+    }
+
+    /// First non-space index at or after `index`.
+    private static func wordStart(from index: Int, in ns: NSString) -> Int {
+        var start = index
+        while start < ns.length,
+              let sp = UnicodeScalar(ns.character(at: start)),
+              CharacterSet.whitespaces.contains(sp) {
+            start += 1
+        }
+        return start
     }
 }
