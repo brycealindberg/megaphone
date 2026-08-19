@@ -23,6 +23,8 @@ enum SpokenNameRepair {
     /// the name itself has.
     private static let extraWindowWords = 1
     private static let minimumNameLength = 5
+    /// Shortest consonant skeleton that can carry a match. See `matchScore`.
+    private static let minimumSkeletonLength = 3
 
     /// - Parameters:
     ///   - names: spellings visible on screen, from `ScreenVocabulary`.
@@ -93,6 +95,21 @@ enum SpokenNameRepair {
                 // lowercase ordinary word. Repair only what was already
                 // written as a proper noun.
                 guard window.first?.text.first?.isUppercase == true else { continue }
+                // A capital is only the recogniser's opinion when grammar has
+                // not already forced one. Every sentence opens with a capital
+                // and the pronoun "I" carries one wherever it falls, so on its
+                // own the guard above waves ordinary words through at the two
+                // positions dictation produces most. Measured over the eleven
+                // days to 2026-08-18: 45 of 3,565 real dictations had a word
+                // the speaker said correctly swapped for a screen term —
+                // "I can do Monday" -> "Queen do Monday", "I'll follow up" ->
+                // "Hello follow up", "Did the messages" -> "Added the
+                // messages" — and seventeen of them were sent to people.
+                //
+                // Every window word is checked, not just the first: a name
+                // that correctly matched can otherwise drag the next word in
+                // with it ("Priya was texting" -> "Priya Sam texting").
+                guard !window.contains(where: { isOrdinaryWord($0.text) }) else { continue }
                 let candidate = window.map(\.text).joined(separator: " ")
                 guard let score = matchScore(candidate: candidate, name: name) else { continue }
                 if best == nil || score < best!.score {
@@ -107,6 +124,42 @@ enum SpokenNameRepair {
         return result
     }
 
+    /// Common English, which a screen term may never overwrite however alike
+    /// the two sound.
+    ///
+    /// `SentenceContinuation.functionWords` is the same judgement already made
+    /// once — "words that are never proper nouns" — so it is reused rather than
+    /// restated. Two adjustments, both for reasons that belong to this pass:
+    ///
+    ///   * **"i" is added.** That list leaves it out deliberately, because it
+    ///     decides what to *lowercase* and the pronoun must keep its capital.
+    ///     Here the question is the opposite one — whether a capital means
+    ///     anything — and for "I" it never does.
+    ///   * **"a" is removed.** It is how the recogniser renders a name it could
+    ///     not place ("Dana a Conquo" for "Dana Okonkwo"), so inside a window it
+    ///     is part of the mishear rather than a word the speaker chose. It can
+    ///     only ever be consumed mid-window: the uppercase guard stops a
+    ///     lowercase article from starting one.
+    ///
+    /// The interjections are local because that list has no need of them, and
+    /// they earn their place: an interjection opens a sentence, so it collects
+    /// a capital, and it is exactly the kind of short word whose skeleton lands
+    /// near something. "Dang" was the largest false positive left after the
+    /// skeleton floor, turning into a screen term reading "Waiting" five times.
+    private static let ordinaryWords: Set<String> = SentenceContinuation.functionWords
+        .union([
+            "i", "oh", "ok", "yes", "hey", "hi", "um", "uh", "sure", "wait",
+            "dang", "damn", "wow", "huh", "nah", "aha", "lol", "lmao", "yikes",
+            "bro", "dude", "man",
+        ])
+        .subtracting(["a"])
+
+    /// Apostrophes do not survive `tokenize`, so "I'll" arrives as "I" + "ll"
+    /// and matching the stem is enough to catch the whole contraction.
+    private static func isOrdinaryWord(_ word: String) -> Bool {
+        ordinaryWords.contains(word.lowercased())
+    }
+
     /// Lower is better; `nil` means "not a match, leave it alone".
     ///
     /// Two independent tests must both pass. The consonant skeleton catches a
@@ -117,11 +170,34 @@ enum SpokenNameRepair {
         let a = normalize(candidate)
         let b = normalize(name)
         guard !a.isEmpty, !b.isEmpty else { return nil }
+
+        let candidateSkeleton = skeleton(a)
+        let nameSkeleton = skeleton(b)
+        // A skeleton this short is not an acoustic fingerprint, it is a
+        // coincidence waiting to happen — and because vowels drop out entirely
+        // it can even come back empty, at which point two words match on
+        // nothing at all. Measured by replaying 3,565 real dictations: "AI" and
+        // "UI" and a bare "A" (all skeleton "") matched a screen term reading
+        // "YOOOO", "AWS" and "AZ" (skeleton "s") both matched "a-zA-Z", and an
+        // ordinary given name whose skeleton is a single "l" became a button
+        // reading "Hello". Acronyms are the common shape here, since dropping
+        // vowels is most of what makes one.
+        //
+        // Three is the floor every measured true repair clears with room spare
+        // — Marek "nrk", Okonkwo "knk", LedgerIQ "ltkrk", Travis "trfs".
+        //
+        // The floor is checked before the equality shortcut below, not after:
+        // `normalize` collapses doubled letters, so "Yo" and a screen term
+        // reading "YOOOO" arrive here as the same string and would otherwise
+        // match perfectly.
+        guard candidateSkeleton.count >= minimumSkeletonLength,
+              nameSkeleton.count >= minimumSkeletonLength else { return nil }
+
         if a == b { return 0 }
         // A wildly different length is a different word, whatever it sounds like.
         guard abs(a.count - b.count) <= 3 else { return nil }
 
-        let skeletonDistance = editDistance(skeleton(a), skeleton(b))
+        let skeletonDistance = editDistance(candidateSkeleton, nameSkeleton)
         let rawDistance = editDistance(a, b)
 
         // The candidate is already known to be a proper noun, so an identical

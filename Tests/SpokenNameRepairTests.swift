@@ -7,6 +7,9 @@ enum SpokenNameRepairTests {
         testCorrectSpellingIsLeftAlone()
         testDictionaryTermsAreProtected()
         testLowercaseWordsAreNeverRepaired()
+        testGrammarCapitalsAreNeverRepaired()
+        testOrdinaryWordGuardDoesNotDisarmTheStem()
+        testAcronymsAndShortSkeletonsNeverMatch()
         testShortAndEmptyInputsAreIgnored()
         testUnrelatedNamesNeverMatch()
         testPossessiveOnScreenNeverAddsOne()
@@ -107,6 +110,105 @@ enum SpokenNameRepairTests {
             let out = SpokenNameRepair.apply(text, names: names)
             expect(out == text, "corrupted a near-collision:\n  in:  \(text)\n  out: \(out)")
         }
+    }
+
+    /// The lowercase guard above is necessary but not sufficient, and this is
+    /// the hole it left. It reads a capital as the recogniser's opinion that a
+    /// word is a name — but **every sentence starts with a capital, and the
+    /// pronoun "I" always carries one**, so at exactly the two positions
+    /// dictation produces most often the guard waves ordinary words straight
+    /// through to a screen term that happens to sound alike.
+    ///
+    /// Every line below is a real corruption taken from `transcripts.jsonl`,
+    /// with the screen term that caused it: 45 of them in 3,565 dictations over
+    /// the eleven days to 2026-08-18, about four a day, and seventeen went out
+    /// through WhatsApp, iMessage and Discord to real people.
+    private static func testGrammarCapitalsAreNeverRepaired() {
+        let corruptions: [(String, [String])] = [
+            // Sentence-initial capitals.
+            ("Do we still need this?", ["Added"]),
+            ("Did the messages she sent in?", ["Added"]),
+            ("The one I should send.", ["Added"]),
+            ("What do you think is best?", ["Without"]),
+            ("They shipped it yesterday.", ["Tattoo"]),
+            ("Then we can start the migration.", ["Ethan"]),
+            ("All of the checks came back green.", ["Allow"]),
+            ("Oh, that changes things.", ["YOOOO"]),
+            ("It's like a 2 tab layout.", ["Audit"]),
+            ("And yeah, definitely good to catch up.", ["Anita"]),
+            ("There it is, right at the top.", ["Authority"]),
+            ("You can send it whenever.", ["HeyCyan"]),
+            // An interjection is the same shape: it opens a sentence, so it
+            // collects a capital, and it is short enough to land near anything.
+            ("Dang, yeah, it does go on tangents.", ["Waiting"]),
+            // The pronoun "I", which is capitalised wherever it falls.
+            ("OK, yes, I can do Monday or Tuesday morning PST.", ["Queen"]),
+            ("I'll follow up with her.", ["Hello"]),
+            ("I'll purchase released an MCP.", ["Allow"]),
+            ("I think the account is still processing.", ["Waiting"]),
+            ("I'm heading out in ten minutes.", ["Miami"]),
+            ("I was testing the regex on that file.", ["a-zA-Z"]),
+            ("How can I do number one for number two?", ["Added"]),
+            // An ordinary word swallowed by a two-word window, after a name the
+            // pass correctly left alone: "Priya was" -> "Priya Sam".
+            ("Whatever Priya was texting in the past 3 days.", ["Priya Sam"]),
+        ]
+        for (text, names) in corruptions {
+            let out = SpokenNameRepair.apply(text, names: names)
+            expect(out == text, "rewrote a grammar capital:\n  in:  \(text)\n  out: \(out)")
+        }
+    }
+
+    /// The second half of the same failure, found by replaying 3,565 real
+    /// dictations against the fixed pass rather than by reading it. Dropping
+    /// vowels is most of what makes an acronym, so an acronym's consonant
+    /// skeleton is one character or none — and two empty skeletons compare
+    /// equal, which is a match on nothing whatsoever. The capitalisation guard
+    /// is no help at all here: an acronym really is uppercase.
+    private static func testAcronymsAndShortSkeletonsNeverMatch() {
+        let collisions: [(String, [String])] = [
+            // Empty skeletons: every letter is a vowel or a semivowel.
+            ("Can we fix the AI copy on that screen?", ["YOOOO"]),
+            ("On a UI and UX standpoint, is it easy?", ["YOOOO"]),
+            ("For the brief, I like A.", ["YOOOO"]),
+            ("Yo, what do you mean?", ["YOOOO"]),
+            // One-character skeletons.
+            ("The keys were added in AWS.", ["a-zA-Z"]),
+            ("How is everything been in AZ?", ["a-zA-Z"]),
+            ("Can you update the agents MD file?", ["Mindi"]),
+            ("I am going to show Ravi and Holly on a call.", ["Hello"]),
+            ("Sorry, this Wi-Fi stuff is a headache.", ["YOOOO"]),
+            ("Literally LOL.", ["Hello"]),
+        ]
+        for (text, names) in collisions {
+            let out = SpokenNameRepair.apply(text, names: names)
+            expect(out == text, "matched on a short skeleton:\n  in:  \(text)\n  out: \(out)")
+        }
+    }
+
+    /// The ordinary-word guard must not reach past its job. A one-letter "a" is
+    /// how the recogniser splits a name it could not place ("Dana a Conquo"),
+    /// so it stays eligible even though it is an article — and a real name is
+    /// still repaired at the start of a sentence, where the capital happens to
+    /// be grammar but the word is nobody's function word.
+    private static func testOrdinaryWordGuardDoesNotDisarmTheStem() {
+        expect(
+            SpokenNameRepair.apply(
+                "Please add Dana a Conquo to the call.",
+                names: ["Dana Okonkwo"]
+            ) == "Please add Dana Okonkwo to the call.",
+            "the article inside a split name stopped being repairable"
+        )
+        expect(
+            SpokenNameRepair.apply("Merrick sent the contract over.", names: ["Marek"])
+                == "Marek sent the contract over.",
+            "a real name at the start of a sentence stopped being repaired"
+        )
+        expect(
+            SpokenNameRepair.apply("Ledger IQ ships on Friday.", names: ["LedgerIQ"])
+                == "LedgerIQ ships on Friday.",
+            "a sentence-initial product name stopped being repaired"
+        )
     }
 
     private static func testShortAndEmptyInputsAreIgnored() {
