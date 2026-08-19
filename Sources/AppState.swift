@@ -818,6 +818,23 @@ final class AppState: ObservableObject, @unchecked Sendable {
     /// perfectly valid settled value.
     private var screenVocabularySettled = false
 
+    /// Length of the prompt prefix actually handed to `prewarmPrompt` for this
+    /// recording, or nil if the prewarm never fired.
+    ///
+    /// Exists only to be logged. The prewarm is the one measured latency lever
+    /// on the cleanup path (-182 ms when it lands), and it was reported at
+    /// `.info`, which macOS never persists — so whether it fires in real use has
+    /// never been answerable from a log. Its gate is `screenVocabularySettled`,
+    /// which waits on an accessibility read of the frontmost window with its own
+    /// 1.2s budget, and a short utterance can be over before that lands.
+    private var prewarmedPrefixChars: Int?
+
+    /// When the current recording's streaming session started, so the prewarm
+    /// outcome can be split by how long the utterance actually was. That split
+    /// is the whole question: a hit rate averaged over long and short dictations
+    /// together would hide exactly the case this is meant to expose.
+    private var recordingStartedAt: ContinuousClock.Instant?
+
     /// Bumped once per streaming session. The screen read is an unstructured
     /// detached task that outlives the session that started it — cancelling a
     /// recording does not cancel the read — so the publish is gated on this
@@ -3699,6 +3716,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
         overlayManager.showTranscribing()
         var marks = LatencyMarks()
         marks.mark("stop requested")
+        logPrewarmOutcome()
         audioRecorder.stopRecording { [weak self] fileURL in
             guard let self else { return }
             marks.mark("recorder stopped")
@@ -4218,6 +4236,10 @@ final class AppState: ObservableObject, @unchecked Sendable {
         // Nothing to wait for when the feature is off, so the prewarm join
         // must not block on a read that will never happen.
         screenVocabularySettled = !wantsScreenVocabulary
+        // Reset the prewarm accounting here rather than in `beginRecording`, so
+        // it can never disagree with the `screenVocabularySettled` it describes.
+        prewarmedPrefixChars = nil
+        recordingStartedAt = .now
         let session = SpeechAnalyzerStreamingSession(
             localePreference: transcriptionLanguage,
             vocabulary: speechRecognitionVocabulary,
@@ -4358,12 +4380,47 @@ final class AppState: ObservableObject, @unchecked Sendable {
         let prefix = AppleFoundationModelsPostProcessor.cleanupPromptPrefix(
             for: plan.request(transcript: "")
         )
-        os_log(.info, log: recordingLog, "prewarming cleanup prompt prefix: %{public}d chars", prefix.count)
+        // `.default`, not `.info`: macOS never persists `.info`, so this line
+        // existed but could not be read back after the fact.
+        os_log(.default, log: recordingLog, "prewarming cleanup prompt prefix: %{public}d chars", prefix.count)
+        prewarmedPrefixChars = prefix.count
         Task {
             await AppleFoundationModelsPostProcessor.shared.prewarmPrompt(
                 sessionID: sessionID, prefix: prefix
             )
         }
+    }
+
+    /// Report, at stop, whether the prompt prefix was prewarmed for this
+    /// recording — and when it was not, how long the utterance ran and whether
+    /// the screen read had settled.
+    ///
+    /// Logged on **every** path, including the misses and the modes where a
+    /// prewarm is not attempted at all. An early return that logged nothing
+    /// would be indistinguishable from the feature never running, which is the
+    /// exact confusion this is being added to remove.
+    ///
+    /// `.default` so it persists: the pair of numbers that matters is
+    /// (spoke_ms, hit/miss), and it can only be read back if macOS keeps it.
+    private func logPrewarmOutcome() {
+        let spokeMs = recordingStartedAt.map {
+            LatencyMarks.milliseconds($0.duration(to: ContinuousClock.now))
+        } ?? -1
+        let outcome: String
+        if let chars = prewarmedPrefixChars {
+            outcome = "hit \(chars) chars"
+        } else if smartCleanupMode != .smart {
+            outcome = "n/a (mode \(smartCleanupMode.rawValue))"
+        } else if currentSessionIntent.isCommandMode {
+            outcome = "n/a (command)"
+        } else {
+            outcome = "MISS"
+        }
+        os_log(
+            .default, log: recordingLog,
+            "prewarm %{public}@ spoke %.0f ms screenVocabularySettled=%{public}@",
+            outcome, spokeMs, screenVocabularySettled ? "yes" : "no"
+        )
     }
 
     private func fallbackContextAtStop() -> AppContext {
@@ -4704,7 +4761,9 @@ final class AppState: ObservableObject, @unchecked Sendable {
         /// past a second modulo 1000 ms — a 1,236 ms path logged as 235.9 ms.
         /// That corrupts exactly the slow runs the marks exist to catch, so the
         /// seconds field has to be carried too.
-        private static func milliseconds(_ duration: Duration) -> Double {
+        /// Not private: `logPrewarmOutcome` needs the same seconds-carrying
+        /// conversion, and duplicating it is how the modulo-1000 bug comes back.
+        static func milliseconds(_ duration: Duration) -> Double {
             let parts = duration.components
             return Double(parts.seconds) * 1000 + Double(parts.attoseconds) / 1e15
         }
